@@ -439,7 +439,7 @@ describe("compat instance provider", () => {
 		const { agentDir, cleanup } = withTempAgentDir();
 		try {
 			// A Kimi id routed to anthropic-messages is exactly the case
-			// applyMoonshotKimiCompatModel returns early for, so the overlay must not be
+			// applyGatewayModelCompat returns early for, so the overlay must not be
 			// gated behind an isMoonshotKimiCompatModel check.
 			const kimiMessages: Model<Api> = {
 				...model("k3"),

@@ -10,8 +10,10 @@ import {
 	clearPricingCacheMemory,
 } from "../extensions/model-pricing-cache.js";
 import {
-	applyMoonshotKimiCompatModel,
+	applyGatewayModelCompat,
 	compatModelsUrl,
+	deepseekOpenAICompat,
+	isDeepSeekCompatModel,
 	isMoonshotKimiCompatModel,
 	isMoonshotKimiK3Model,
 	mapCompatModelsPayload,
@@ -428,6 +430,36 @@ describe("mapCompatModelsPayload", () => {
 		expect(models[3]?.compat).toBeUndefined();
 	});
 
+	it("injects DeepSeek OpenAI compat for gateway-routed models", () => {
+		const { models } = mapCompatModelsPayload(
+			[
+				{ id: "deepseek-chat", provider_id: "deepseek" },
+				{ id: "deepseek-reasoner" },
+				{ id: "custom-alias", provider_id: "deepseek-ai" },
+				{ id: "gpt-4o", provider_id: "openai" },
+			],
+			OPTIONS,
+		);
+
+		expect(models[0]?.compat).toEqual(deepseekOpenAICompat());
+		expect(models[1]?.compat).toEqual(deepseekOpenAICompat());
+		expect(models[2]?.compat).toEqual(deepseekOpenAICompat());
+		expect(models[3]?.compat).toBeUndefined();
+	});
+
+	it("detects DeepSeek models by vendor or id prefix", () => {
+		expect(isDeepSeekCompatModel("custom-alias", "deepseek")).toBe(true);
+		expect(isDeepSeekCompatModel("custom-alias", "deepseek-ai")).toBe(true);
+		expect(isDeepSeekCompatModel("deepseek-chat")).toBe(true);
+		expect(isDeepSeekCompatModel("vendor/deepseek-reasoner")).toBe(true);
+		expect(isDeepSeekCompatModel("gpt-4o", "openai")).toBe(false);
+	});
+
+	it("patches cached DeepSeek models with the non-developer role compat", () => {
+		const cached = { id: "deepseek-chat", api: "openai-completions" } as unknown as Model<Api>;
+		applyGatewayModelCompat(cached);
+		expect(cached.compat).toEqual(deepseekOpenAICompat());
+	});
 	it("detects Moonshot/Kimi models by vendor or id prefix", () => {
 		expect(isMoonshotKimiCompatModel("custom-alias", "moonshotai-cn")).toBe(true);
 		expect(isMoonshotKimiCompatModel("kimi-k2.6")).toBe(true);
@@ -437,6 +469,7 @@ describe("mapCompatModelsPayload", () => {
 		expect(isMoonshotKimiK3Model("kimi3")).toBe(true);
 		expect(isMoonshotKimiCompatModel("gpt-4o", "openai")).toBe(false);
 	});
+
 
 	it("uses kimi-k3-specific compat when the model id indicates k3", () => {
 		expect(moonshotKimiOpenAICompat("kimi-k3")).toMatchObject({
@@ -476,7 +509,7 @@ describe("mapCompatModelsPayload", () => {
 			thinkingLevelMap: { off: "cached-off", max: "cached-max" },
 		};
 
-		applyMoonshotKimiCompatModel(cached);
+		applyGatewayModelCompat(cached);
 
 		expect(cached.compat).toEqual(moonshotKimiOpenAICompat("k3"));
 		expect(cached.thinkingLevelMap).toEqual(UNIVERSAL_THINKING_LEVEL_MAP);
@@ -491,7 +524,7 @@ describe("mapCompatModelsPayload", () => {
 			// openai-responses by default, so skipping it there would resurrect the
 			// Moonshot "tokenization failed" error.
 			const model = { id: "k3", api } as unknown as Model<Api>;
-			applyMoonshotKimiCompatModel(model);
+			applyGatewayModelCompat(model);
 			expect(model.compat).toMatchObject({ supportsDeveloperRole: false });
 		},
 	);
@@ -500,7 +533,7 @@ describe("mapCompatModelsPayload", () => {
 		// AnthropicMessagesCompat shares none of these fields, so applying them would
 		// be metadata from the wrong API family.
 		const model = { id: "k3", api: "anthropic-messages" } as unknown as Model<Api>;
-		applyMoonshotKimiCompatModel(model);
+		applyGatewayModelCompat(model);
 		expect(model.compat).toBeUndefined();
 	});
 });
