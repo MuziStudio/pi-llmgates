@@ -29,6 +29,11 @@ function stripControlChars(value: string): string {
 	return value.replace(/\p{Control}/gu, "");
 }
 
+const DEEPSEEK_VENDOR_IDS = new Set([
+	"deepseek",
+	"deepseek-ai",
+]);
+
 const MOONSHOT_KIMI_VENDOR_IDS = new Set([
 	"moonshotai",
 	"moonshotai-cn",
@@ -51,6 +56,25 @@ export function isMoonshotKimiK3Model(modelId: string): boolean {
 		bareId.startsWith("kimi-k3-") ||
 		bareId.startsWith("k3-")
 	);
+}
+
+export function isDeepSeekCompatModel(modelId: string, vendor?: string): boolean {
+	const normalizedVendor = vendor?.trim().toLowerCase();
+	if (normalizedVendor && DEEPSEEK_VENDOR_IDS.has(normalizedVendor)) {
+		return true;
+	}
+
+	const bareId = bareCompatModelId(modelId);
+	return bareId === "deepseek" || bareId.startsWith("deepseek-");
+}
+
+/** Align gateway-routed DeepSeek models with pi-ai's native DeepSeek transport metadata. */
+export function deepseekOpenAICompat(): OpenAICompletionsCompat {
+	return {
+		supportsStore: false,
+		supportsDeveloperRole: false,
+		requiresReasoningContentOnAssistantMessages: true,
+	};
 }
 
 /** Moonshot/Kimi models routed via CPA, Sub2API, or NewAPI lose pi-ai URL-based compat detection. */
@@ -107,18 +131,18 @@ export function moonshotKimiOpenAICompat(modelId: string): OpenAICompletionsComp
  * AnthropicMessagesCompat shares none of those fields, so a Kimi model routed to
  * `messages` must not be stamped with this metadata at all.
  */
-export function applyMoonshotKimiCompatModel<T extends Model<Api>>(
+export function applyGatewayModelCompat<T extends Model<Api>>(
 	model: T,
 	vendor?: string,
 ): T {
 	if (model.api === "anthropic-messages") {
 		return applyUniversalThinkingLevelMapToModel(model);
 	}
-	if (!isMoonshotKimiCompatModel(model.id, vendor)) {
+	if (!isMoonshotKimiCompatModel(model.id, vendor) && !isDeepSeekCompatModel(model.id, vendor)) {
 		return model;
 	}
 
-	model.compat = moonshotKimiOpenAICompat(model.id);
+	model.compat = isDeepSeekCompatModel(model.id, vendor) ? deepseekOpenAICompat() : moonshotKimiOpenAICompat(model.id);
 	return applyUniversalThinkingLevelMapToModel(model);
 }
 
@@ -273,7 +297,7 @@ export function mapCompatModelsPayload(
 			thinkingLevelMap: thinking.thinkingLevelMap,
 			...(thinking.compat ? { compat: thinking.compat } : {}),
 		};
-		models.push(applyMoonshotKimiCompatModel(model, vendor));
+		models.push(applyGatewayModelCompat(model, vendor));
 		catalogRefs.push(
 			vendor && KNOWN_UPSTREAM_VENDOR_IDS.has(vendor)
 				? { id, providerId: vendor }
