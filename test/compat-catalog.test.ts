@@ -447,6 +447,15 @@ describe("mapCompatModelsPayload", () => {
 		expect(models[3]?.compat).toBeUndefined();
 	});
 
+	it("matches pi-ai's native DeepSeek transport metadata", () => {
+		expect(deepseekOpenAICompat()).toEqual({
+			supportsStore: false,
+			supportsDeveloperRole: false,
+			requiresReasoningContentOnAssistantMessages: true,
+			thinkingFormat: "deepseek",
+		});
+	});
+
 	it("detects DeepSeek models by vendor or id prefix", () => {
 		expect(isDeepSeekCompatModel("custom-alias", "deepseek")).toBe(true);
 		expect(isDeepSeekCompatModel("custom-alias", "deepseek-ai")).toBe(true);

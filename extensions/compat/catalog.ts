@@ -74,6 +74,9 @@ export function deepseekOpenAICompat(): OpenAICompletionsCompat {
 		supportsStore: false,
 		supportsDeveloperRole: false,
 		requiresReasoningContentOnAssistantMessages: true,
+		// Without this, pi-ai never emits `thinking: { type: "enabled" }` for
+		// reasoning models and the reasoner path breaks on gateway-routed DeepSeek.
+		thinkingFormat: "deepseek",
 	};
 }
 
