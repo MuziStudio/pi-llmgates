@@ -257,6 +257,8 @@ Every model has `reasoning: true`, so the selector always exposes the levels abo
 
 On top of that, **Moonshot / Kimi** models routed through a gateway lose pi-ai's URL-based compat detection, so the extension supplies that transport compat itself — keyed on the vendor (`moonshotai` / `moonshot` / `kimi-coding`, …) or on an id starting with `kimi-` / `moonshot`. The load-bearing field is `supportsDeveloperRole: false`; without it Moonshot answers `tokenization failed`. This too **only affects request shape**: it changes neither the endpoint choice nor the effort string, so it does not contradict "the protocol is never guessed from the scheme or the model name" above. A Kimi model routed to `messages` shares none of those fields and is deliberately left unstamped.
 
+**DeepSeek** models routed through a gateway likewise lose pi-ai's URL-based detection, so the extension supplies DeepSeek transport compat keyed on the vendor (`deepseek` / `deepseek-ai`) or an id starting with `deepseek-`. This sends the system prompt with the `system` role, uses DeepSeek's `thinking` parameter for reasoning requests, and disables `store`. It changes request shape only, not endpoint selection or the effort string; the known vendor hint for aliases is persisted with the model cache so offline restores retain the same compat.
+
 **User-level fine-tuning (pi's own hook):** override a single model's thinking levels through `providers.<instance-id>.modelOverrides` in `~/.pi/agent/models.json` (top level, merge semantics — only the keys you write are overridden):
 
 ```jsonc

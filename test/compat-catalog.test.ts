@@ -444,6 +444,7 @@ describe("mapCompatModelsPayload", () => {
 		expect(models[0]?.compat).toEqual(deepseekOpenAICompat());
 		expect(models[1]?.compat).toEqual(deepseekOpenAICompat());
 		expect(models[2]?.compat).toEqual(deepseekOpenAICompat());
+		expect((models[2] as { gatewayVendor?: string }).gatewayVendor).toBe("deepseek-ai");
 		expect(models[3]?.compat).toBeUndefined();
 	});
 
@@ -467,6 +468,18 @@ describe("mapCompatModelsPayload", () => {
 	it("patches cached DeepSeek models with the non-developer role compat", () => {
 		const cached = { id: "deepseek-chat", api: "openai-completions" } as unknown as Model<Api>;
 		applyGatewayModelCompat(cached);
+		expect(cached.compat).toEqual(deepseekOpenAICompat());
+	});
+
+	it("reapplies vendor compat to a cached alias without a fresh vendor argument", () => {
+		const { models } = mapCompatModelsPayload(
+			[{ id: "custom-alias", provider_id: "deepseek-ai" }],
+			OPTIONS,
+		);
+		const cached = { ...models[0], compat: undefined } as Model<Api>;
+
+		applyGatewayModelCompat(cached);
+
 		expect(cached.compat).toEqual(deepseekOpenAICompat());
 	});
 	it("detects Moonshot/Kimi models by vendor or id prefix", () => {
