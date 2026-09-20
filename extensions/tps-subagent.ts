@@ -16,8 +16,10 @@ export const PI_SUBAGENTS_PROJECT_DIR = join(".pi", "subagents");
 export const SUBAGENTS_SESSION_ARTIFACTS_DIR_NAME = "subagent-artifacts";
 
 /**
- * Only tools that return child LLM usage. Do NOT add subagent_wait /
- * subagent_supervisor / intercom — those would double-count with async-complete (§13.11).
+ * Only tools that return child LLM usage. Do NOT add bg_wait /
+ * subagent_wait / subagent_supervisor / intercom — management projections are
+ * either handled by the dedicated bg_wait adapter or would double-count with
+ * async-complete (§13.11).
  */
 export const SUBAGENT_TOOL_NAMES = new Set(["subagent", "task"]);
 
@@ -45,6 +47,12 @@ export interface SubagentUsageRecord extends SubagentModelUsage {
 	revision?: number;
 	/** Revisions are comparable only within this inlet. */
 	revisionSource?: "meta" | "tool";
+	/**
+	 * Set when the record came from an indexless `_meta.json` whose canonical
+	 * index 0 was inferred rather than read off the file name. Only such a key
+	 * may later be revoked when the identity stops being unique.
+	 */
+	metaIndexless?: boolean;
 }
 
 export interface SubagentUsageCounters {
@@ -183,7 +191,7 @@ export function usageCountersToRecord(
 	sourceKey: string,
 	modelLabel: string,
 	usage: SubagentUsageCounters,
-	costQuality: MetricQuality = "reported",
+	costQuality?: MetricQuality,
 ): SubagentUsageRecord | null {
 	const calls = normalizeCalls(usage.turns);
 	const input = normalizeTokenCount(usage.input);
@@ -191,7 +199,15 @@ export function usageCountersToRecord(
 	const cacheRead = normalizeTokenCount(usage.cacheRead);
 	const cacheWrite = normalizeTokenCount(usage.cacheWrite);
 	const costUsd = normalizeCostUsd(usage.cost);
-	if (calls === 0 && input === 0 && output === 0 && cacheRead === 0 && cacheWrite === 0 && costUsd === 0) {
+	if (
+		calls === 0 &&
+		input === 0 &&
+		output === 0 &&
+		cacheRead === 0 &&
+		cacheWrite === 0 &&
+		costUsd === 0 &&
+		(costQuality === undefined || costQuality !== "reported")
+	) {
 		return null;
 	}
 	return {
@@ -203,7 +219,10 @@ export function usageCountersToRecord(
 		cacheRead,
 		cacheWrite,
 		costUsd,
-		costQuality: costUsd > 0 ? costQuality : "unknown",
+		// A zero amount is meaningful only when the parser explicitly validated
+		// the producer's cost field (for example a Pi-compatible tool result).
+		// Legacy callers that only pass flattened counters retain unknown quality.
+		costQuality: costQuality ?? (costUsd > 0 ? "reported" : "unknown"),
 	};
 }
 
@@ -419,21 +438,29 @@ export function asyncRunSourceKey(asyncDirBasename: string, agent: unknown, chil
 	return `async:${dir}:${normalizedAgent}:${index}`;
 }
 
+export interface MetaFileIdentity {
+	runId: string;
+	agent: string;
+	index: number | null;
+}
+
 /**
- * Right-to-left parse: `_meta.json` → index → agent → remaining runId (may contain `-`) (§13.1/§13.10).
+ * Right-to-left parse: `_meta.json` → optional index → agent → remaining runId
+ * (may contain `-`).  The indexless form is returned as identity only; callers
+ * must prove that it is the sole child for this parent/agent before assigning
+ * canonical index 0.
  */
-export function metaFileSourceKey(fileName: string): string | null {
+export function parseMetaFileIdentity(fileName: string): MetaFileIdentity | null {
 	const name = fileName.trim();
 	if (!name.toLowerCase().endsWith("_meta.json")) {
 		return null;
 	}
 	const withoutSuffix = name.slice(0, -"_meta.json".length);
 	const indexMatch = /_(\d+)$/.exec(withoutSuffix);
-	if (!indexMatch || indexMatch.index === undefined) {
-		return null;
-	}
-	const index = indexMatch[1];
-	const withoutIndex = withoutSuffix.slice(0, indexMatch.index);
+	const index = indexMatch && indexMatch.index !== undefined ? Number.parseInt(indexMatch[1]!, 10) : null;
+	const withoutIndex = indexMatch && indexMatch.index !== undefined
+		? withoutSuffix.slice(0, indexMatch.index)
+		: withoutSuffix;
 	if (!withoutIndex) {
 		return null;
 	}
@@ -447,12 +474,19 @@ export function metaFileSourceKey(fileName: string): string | null {
 		if (!runId || !agent) {
 			continue;
 		}
-		const key = subagentRunSourceKey(runId, agent, index);
-		if (key) {
-			return key;
+		const normalizedRunId = normalizeRunIdForSourceKey(runId);
+		const normalizedAgent = agent.trim().toLowerCase();
+		if (normalizedRunId && RUN_ID_HEX_RE.test(normalizedRunId) && AGENT_NAME_RE.test(normalizedAgent)) {
+			return { runId: normalizedRunId, agent: normalizedAgent, index };
 		}
 	}
 	return null;
+}
+
+/** Indexed files are always canonical; indexless files are fail-closed here. */
+export function metaFileSourceKey(fileName: string): string | null {
+	const identity = parseMetaFileIdentity(fileName);
+	return identity?.index === null ? null : identity ? subagentRunSourceKey(identity.runId, identity.agent, identity.index) : null;
 }
 
 export function resolveSubagentSourceKey(
@@ -687,6 +721,74 @@ export function extractSubagentUsageFromToolExecution(
 	return [];
 }
 
+/**
+ * Parse the pi-subagents 0.69 `bg_wait` management result.
+ *
+ * `bg_wait` projects completed runs and may carry a pooled top-level `usage`.
+ * That pooled value is deliberately ignored: completion child usage belongs to
+ * the async/meta ownership path and binding a run from this payload alone would
+ * allow an old session's wait result to claim the current session.  The caller
+ * supplies run ids already observed through a trusted launch/completion path.
+ */
+export function extractBgWaitUsage(
+	result: unknown,
+	currentSession: string | SubagentSessionIdentity | null | undefined,
+	trustedRunIds: ReadonlySet<string>,
+): SubagentUsageRecord[] {
+	if (!isPlainObject(result) || !isPlainObject(result.details)) return [];
+	if (!normalizeSubagentSessionIdentity(currentSession)) return [];
+	const details = result.details;
+	if (details.mode !== "management" || !Array.isArray(details.completions)) return [];
+
+	for (const container of [result, details]) {
+		if (!isPlainObject(container)) continue;
+		for (const key of ["sessionId", "sessionFile"] as const) {
+			if (container[key] !== undefined && !subagentEventMatchesSession(container[key], currentSession)) {
+				return [];
+			}
+		}
+	}
+
+	const trusted = new Set<string>();
+	for (const runId of trustedRunIds) {
+		const normalized = normalizeRunIdForSourceKey(runId);
+		if (normalized && RUN_ID_HEX_RE.test(normalized)) trusted.add(normalized);
+	}
+	if (trusted.size === 0) return [];
+
+	const normalizeCandidate = (value: unknown): string | undefined => {
+		if (typeof value !== "string") return undefined;
+		const normalized = normalizeRunIdForSourceKey(value);
+		return normalized && RUN_ID_HEX_RE.test(normalized) ? normalized : undefined;
+	};
+
+	const records: SubagentUsageRecord[] = [];
+	for (const completion of details.completions) {
+		if (!isPlainObject(completion)) continue;
+		const parentRaw = completion.runId ?? completion.id;
+		const parent = normalizeCandidate(parentRaw);
+		const childResults = Array.isArray(completion.results) ? completion.results : [completion];
+		for (let index = 0; index < childResults.length; index++) {
+			const item = childResults[index];
+			if (!isPlainObject(item)) continue;
+			const childRaw = item.runId ?? item.id;
+			const hasChildIdentity = childRaw !== undefined;
+			const child = normalizeCandidate(childRaw);
+			// An explicitly malformed child id must not silently fall back to its
+			// parent; that would turn a cross-run projection into current ownership.
+			if (hasChildIdentity && !child) continue;
+			const owner = child ?? parent;
+			if (!owner || !trusted.has(owner)) continue;
+			const agent = item.agent ?? completion.agent;
+			const sourceKey = subagentRunSourceKey(owner, agent, index);
+			if (!sourceKey) continue;
+			const record = recordFromPartial(item, sourceKey, agent);
+			if (record) records.push(record);
+		}
+	}
+	return records;
+}
+
 /** Parse ponytail / `.pi-subagents` meta.json usage rollup (usage → modelAttempts). */
 export function parsePiSubagentsMetaJson(raw: unknown, sourceKey: string): SubagentUsageRecord | null {
 	if (!isPlainObject(raw)) {
@@ -719,8 +821,9 @@ export const MAX_SUBAGENT_META_READS_PER_SCAN = 256;
 export function readPiSubagentsMetaUsage(
 	metaPath: string,
 	knownSizeBytes?: number,
+	sourceKeyOverride?: string,
 ): SubagentUsageRecord | null {
-	const sourceKey = metaFileSourceKey(metaPath.split(/[/\\]/).pop() ?? "");
+	const sourceKey = sourceKeyOverride ?? metaFileSourceKey(metaPath.split(/[/\\]/).pop() ?? "");
 	if (!sourceKey) {
 		return null;
 	}
@@ -745,6 +848,45 @@ export function listPiSubagentMetaFiles(artifactsDir: string): string[] {
 	} catch {
 		return [];
 	}
+}
+
+/**
+ * Return canonical keys whose indexless identity cannot be proved across the
+ * current scan.  The proof has to cover every artifact directory: treating an
+ * indexless file as unique in one directory while an indexed sibling lives in
+ * another would make the result depend on scan order and could double count.
+ */
+export function findAmbiguousIndexlessMetaSourceKeys(
+	artifactDirs: readonly string[],
+): Set<string> {
+	const groups = new Map<string, { runId: string; agent: string; indexless: number; indexed: number }>();
+	for (const artifactsDir of artifactDirs) {
+		for (const metaPath of listPiSubagentMetaFiles(artifactsDir)) {
+			const fileName = metaPath.split(/[/\\]/).pop() ?? "";
+			const identity = parseMetaFileIdentity(fileName);
+			if (!identity) continue;
+			const groupKey = `${identity.runId}\0${identity.agent}`;
+			const group = groups.get(groupKey) ?? {
+				runId: identity.runId,
+				agent: identity.agent,
+				indexless: 0,
+				indexed: 0,
+			};
+			if (identity.index === null) group.indexless += 1;
+			else group.indexed += 1;
+			groups.set(groupKey, group);
+		}
+	}
+
+	const ambiguous = new Set<string>();
+	for (const group of groups.values()) {
+		if (group.indexless === 1 && group.indexed === 0) continue;
+		if (group.indexless > 0) {
+			const sourceKey = subagentRunSourceKey(group.runId, group.agent, 0);
+			if (sourceKey) ambiguous.add(sourceKey);
+		}
+	}
+	return ambiguous;
 }
 
 /**
@@ -787,15 +929,40 @@ export function collectPiSubagentsMetaUsage(
 	onTruncated?: () => void,
 	pendingNullMeta?: Map<string, number>,
 	metaMtimeMs?: Map<string, number>,
+	blockedIndexlessSourceKeys?: ReadonlySet<string>,
 ): SubagentUsageRecord[] {
 	const out: SubagentUsageRecord[] = [];
 	let reads = 0;
 	let truncated = false;
-	for (const metaPath of listPiSubagentMetaFiles(artifactsDir)) {
-		const sourceKey = metaFileSourceKey(metaPath.split(/[/\\]/).pop() ?? "");
+	const metaPaths = listPiSubagentMetaFiles(artifactsDir);
+	const identities = metaPaths.map((metaPath) => ({
+		metaPath,
+		identity: parseMetaFileIdentity(metaPath.split(/[/\\]/).pop() ?? ""),
+	}));
+	const indexlessGroups = new Map<string, { indexless: number; indexed: number }>();
+	for (const { identity } of identities) {
+		if (!identity) continue;
+		const groupKey = `${identity.runId}\0${identity.agent}`;
+		const group = indexlessGroups.get(groupKey) ?? { indexless: 0, indexed: 0 };
+		if (identity.index === null) group.indexless += 1;
+		else group.indexed += 1;
+		indexlessGroups.set(groupKey, group);
+	}
+	for (const { metaPath, identity } of identities) {
+		const sourceKey = identity
+			? identity.index !== null
+				? subagentRunSourceKey(identity.runId, identity.agent, identity.index)
+				: (() => {
+					const group = indexlessGroups.get(`${identity.runId}\0${identity.agent}`);
+					return group?.indexless === 1 && group.indexed === 0
+						? subagentRunSourceKey(identity.runId, identity.agent, 0)
+						: null;
+				})()
+			: null;
 		const source = sourceKey ? parseMetaSourceKeyGranularity(sourceKey) : null;
 		if (
 			!sourceKey ||
+			(identity?.index === null && blockedIndexlessSourceKeys?.has(sourceKey)) ||
 			(allowedRunIds !== undefined && (!source || !allowedRunIds.has(source.runId)))
 		) {
 			continue;
@@ -837,11 +1004,14 @@ export function collectPiSubagentsMetaUsage(
 			break;
 		}
 		reads += 1;
-		const record = readPiSubagentsMetaUsage(metaPath, stats.size);
+		const record = readPiSubagentsMetaUsage(metaPath, stats.size, sourceKey);
 		if (record) {
 			pendingNullMeta?.delete(sourceKey);
 			record.revision = Math.floor(stats.mtimeMs);
 			record.revisionSource = "meta";
+			if (identity?.index === null) {
+				record.metaIndexless = true;
+			}
 			metaMtimeMs?.set(sourceKey, stats.mtimeMs);
 			out.push(record);
 		} else {
@@ -869,6 +1039,16 @@ export type SubagentIngestState = {
 	revisionDomains: Map<string, number>;
 	/** sourceKey → last successful meta mtime; growth re-reads the file. */
 	metaMtimeMs: Map<string, number>;
+	/** sourceKeys whose current ledger contribution came from a meta snapshot. */
+	metaSnapshotKeys: Set<string>;
+	/** sourceKeys whose current contribution was inferred from an indexless meta file. */
+	metaIndexlessKeys: Set<string>;
+	/**
+	 * sourceKeys that were actually accepted into the ledger. `keys` also holds
+	 * cross-granularity losers, which are recorded as seen but never counted, so
+	 * only this set may be used to rebuild the granularity markers.
+	 */
+	countedKeys: Set<string>;
 };
 
 export function createSubagentIngestState(): SubagentIngestState {
@@ -880,6 +1060,9 @@ export function createSubagentIngestState(): SubagentIngestState {
 		revisions: new Map(),
 		revisionDomains: new Map(),
 		metaMtimeMs: new Map(),
+		metaSnapshotKeys: new Set(),
+		metaIndexlessKeys: new Set(),
+		countedKeys: new Set(),
 	};
 }
 
@@ -948,8 +1131,21 @@ export function selectFreshSubagentRecords(
 			}
 		}
 		state.keys.add(record.sourceKey);
+		state.countedKeys.add(record.sourceKey);
 		state.revisions.set(record.sourceKey, nextRev);
 		state.revisionDomains.set(domainKey, nextRev);
+		if (record.revisionSource === "meta") {
+			state.metaSnapshotKeys.add(record.sourceKey);
+		} else {
+			state.metaSnapshotKeys.delete(record.sourceKey);
+		}
+		// An indexed file or a completion event taking the same key clears the
+		// marker: that key is no longer an inference and must not be revoked.
+		if (record.metaIndexless) {
+			state.metaIndexlessKeys.add(record.sourceKey);
+		} else {
+			state.metaIndexlessKeys.delete(record.sourceKey);
+		}
 		const meta = parseMetaSourceKeyGranularity(record.sourceKey);
 		if (meta) {
 			if (meta.kind === "aggregate") {

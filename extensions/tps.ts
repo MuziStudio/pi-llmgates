@@ -18,9 +18,11 @@ import {
 import {
 	collectPiSubagentsMetaUsage,
 	createSubagentIngestState,
+	extractBgWaitUsage,
 	extractSubagentRunIdsFromToolExecution,
 	extractSubagentUsageFromAsyncComplete,
 	extractSubagentUsageFromToolExecution,
+	findAmbiguousIndexlessMetaSourceKeys,
 	normalizeSubagentSessionIdentity,
 	parseMetaSourceKeyGranularity,
 	resolveSubagentArtifactDirs,
@@ -300,6 +302,62 @@ export default function (pi: ExtensionAPI) {
 		turnStats = createEmptyStats();
 	}
 
+	function revokeAmbiguousIndexlessMeta(ambiguousKeys: ReadonlySet<string>): void {
+		if (ambiguousKeys.size === 0) return;
+		// `meta:{runId}:{agent}:0` is also what an indexed `_0_meta.json` and a
+		// completion event for child 0 legitimately own. Only a key whose current
+		// contribution was *inferred* from an indexless file is ambiguous, so
+		// revoking on the canonical name alone would drop a valid child and make
+		// every later scan re-read the file that produced it.
+		const revokedKeys = new Set(
+			[...ambiguousKeys].filter((sourceKey) => subagentIngestState.metaIndexlessKeys.has(sourceKey)),
+		);
+		if (revokedKeys.size === 0) return;
+		const metaSnapshotKeys = new Set(
+			[...revokedKeys].filter((sourceKey) => subagentIngestState.metaSnapshotKeys.has(sourceKey)),
+		);
+		if (metaSnapshotKeys.size > 0) {
+			usageCollector?.ledger.dropWhere(
+				(observation) =>
+					observation.kind === "snapshot" &&
+					metaSnapshotKeys.has(observation.snapshotEpoch ?? ""),
+			);
+		}
+		let stateChanged = false;
+		for (const sourceKey of revokedKeys) {
+			if (subagentIngestState.keys.delete(sourceKey)) stateChanged = true;
+			if (subagentIngestState.countedKeys.delete(sourceKey)) stateChanged = true;
+			if (subagentIngestState.pendingNullMeta.delete(sourceKey)) stateChanged = true;
+			if (subagentIngestState.revisions.delete(sourceKey)) stateChanged = true;
+			if (subagentIngestState.metaMtimeMs.delete(sourceKey)) stateChanged = true;
+			subagentIngestState.metaSnapshotKeys.delete(sourceKey);
+			subagentIngestState.metaIndexlessKeys.delete(sourceKey);
+			for (const domainKey of [...subagentIngestState.revisionDomains.keys()]) {
+				if (domainKey.startsWith(`${sourceKey}\0`)) {
+					subagentIngestState.revisionDomains.delete(domainKey);
+					stateChanged = true;
+				}
+			}
+		}
+		if (stateChanged) {
+			// A removed child/aggregate must not leave a stale run-level granularity
+			// marker that suppresses a later, now-unambiguous file. Rebuild from the
+			// keys that were actually counted: `keys` also holds cross-granularity
+			// losers, and promoting those to markers would suppress both granularities
+			// for that run and freeze its meta growth.
+			subagentIngestState.aggregateRunIds.clear();
+			subagentIngestState.perChildRunIds.clear();
+			for (const sourceKey of subagentIngestState.countedKeys) {
+				const meta = parseMetaSourceKeyGranularity(sourceKey);
+				if (!meta) continue;
+				(meta.kind === "aggregate" ? subagentIngestState.aggregateRunIds : subagentIngestState.perChildRunIds).add(meta.runId);
+			}
+		}
+		if (metaSnapshotKeys.size > 0) {
+			syncStatsFromLedger();
+		}
+	}
+
 	function applySubagentRecords(
 		records: readonly SubagentUsageRecord[],
 		targetStats: ModelUsageStats,
@@ -371,6 +429,8 @@ export default function (pi: ExtensionAPI) {
 			if (!sessionActive) {
 				return;
 			}
+			const blockedIndexlessSourceKeys = findAmbiguousIndexlessMetaSourceKeys(artifactDirs);
+			revokeAmbiguousIndexlessMeta(blockedIndexlessSourceKeys);
 			let truncated = false;
 			const ingestedBefore = subagentIngestState.keys.size;
 			for (const artifactsDir of artifactDirs) {
@@ -385,6 +445,7 @@ export default function (pi: ExtensionAPI) {
 						},
 						subagentIngestState.pendingNullMeta,
 						subagentIngestState.metaMtimeMs,
+						blockedIndexlessSourceKeys,
 					),
 					targetStats,
 				);
@@ -709,6 +770,20 @@ export default function (pi: ExtensionAPI) {
 		if (records.length > 0) {
 			ingestSubagentRecords(records, "sync-subagent");
 		}
+		// pi-subagents 0.69's bg_wait is a management projection.  Its pooled
+		// top-level usage is already represented by async/meta ownership and must
+		// never enter the generic tool inlet.  Only completion children belonging
+		// to a run observed in this session may be accepted here.
+		const sessionIdentity = normalizeSubagentSessionIdentity({
+			sessionId: ctx.sessionManager.getSessionId(),
+			sessionFile: ctx.sessionManager.getSessionFile(),
+		});
+		if (typeof event.toolName === "string" && event.toolName.trim().toLowerCase() === "bg_wait") {
+			const bgWaitRecords = extractBgWaitUsage(event.result, sessionIdentity, sessionRunIds);
+			if (bgWaitRecords.length > 0) {
+				ingestSubagentRecords(bgWaitRecords, "pi-subagents");
+			}
+		}
 		// Inlet D: any other tool that follows pi's `result.usage` convention. Its switch
 		// is checked here rather than at session_start so that turning it off leaves the
 		// subagent / task parsing above running — both are zero-IO parses of a payload
@@ -826,6 +901,8 @@ export default function (pi: ExtensionAPI) {
 		const startedAtMs = sessionStartedAtMs;
 		const settledTurnStats = turnStats;
 		runUsageTask(() => {
+			const blockedIndexlessSourceKeys = findAmbiguousIndexlessMetaSourceKeys(artifactsDirs);
+			revokeAmbiguousIndexlessMeta(blockedIndexlessSourceKeys);
 			for (const artifactsDir of artifactsDirs) {
 				applySubagentRecords(
 					collectPiSubagentsMetaUsage(
@@ -836,6 +913,7 @@ export default function (pi: ExtensionAPI) {
 						undefined,
 						subagentIngestState.pendingNullMeta,
 						subagentIngestState.metaMtimeMs,
+						blockedIndexlessSourceKeys,
 					),
 					settledTurnStats,
 				);
