@@ -255,6 +255,8 @@ pi
 
 经网关路由的 **Moonshot / Kimi** 模型会丢掉 pi-ai 基于 URL 的 compat 识别，因此扩展按 vendor（`moonshotai` / `moonshot` / `kimi-coding` …）或 `kimi-` / `moonshot` 开头的 id 自行补一份传输层 compat，其中起作用的关键字段是 `supportsDeveloperRole: false`——缺了它 Moonshot 会报 `tokenization failed`。这同样**只影响请求形状**：不改 endpoint 选择、不改 effort 字符串，因此与上文「不按 scheme 或模型名猜协议」并不冲突；路由到 `messages` 的 Kimi 模型不共享这些字段，刻意不打这份 metadata。
 
+经网关路由的 **DeepSeek** 模型也会丢掉 pi-ai 基于 URL 的识别，因此扩展按 vendor（`deepseek` / `deepseek-ai`）或 `deepseek-` 开头的 id 补齐 DeepSeek transport compat：系统提示使用 `system` role，推理请求使用 `thinking` 参数，并关闭 `store`。这只改变请求形状，不改变 endpoint 或 effort 字符串；已知 vendor 的别名提示会随模型缓存保存，以便离线恢复时继续使用相同 compat。
+
 **用户级微调（pi 原生钩子）**：在 `~/.pi/agent/models.json` 用 `providers.<实例 ID>.modelOverrides` 覆盖单个模型的思考等级（最顶层，合并语义，只覆盖你写的 key）：
 
 ```jsonc

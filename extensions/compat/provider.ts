@@ -69,7 +69,7 @@ import {
 	translateLoginError,
 } from "../login-ui.js";
 import {
-	applyMoonshotKimiCompatModel,
+	applyGatewayModelCompat,
 	compatModelsUrl,
 	mapCompatModelsPayload,
 } from "./catalog.js";
@@ -601,7 +601,7 @@ export function createCompatProvider(
 	/**
 	 * The optimistic overlay is applied to EVERY cached model with no exceptions —
 	 * including Kimi ids and models routed to `anthropic-messages`, which
-	 * `applyMoonshotKimiCompatModel` returns early for.
+	 * `applyGatewayModelCompat` returns early for.
 	 */
 	function patchCachedModels(
 		cachedModels: readonly Model<Api>[],
@@ -611,7 +611,7 @@ export function createCompatProvider(
 			if (canonicalBaseUrl) {
 				applyInferenceBaseUrlToModel(model, canonicalBaseUrl);
 			}
-			applyMoonshotKimiCompatModel(model);
+			applyGatewayModelCompat(model);
 			applyAnthropicAdaptiveCompatToModel(model);
 			applyUniversalThinkingLevelMapToModel(model);
 			const cost = lookupMemoryPricingRates(model.id);

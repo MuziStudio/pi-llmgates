@@ -439,7 +439,7 @@ describe("compat instance provider", () => {
 		const { agentDir, cleanup } = withTempAgentDir();
 		try {
 			// A Kimi id routed to anthropic-messages is exactly the case
-			// applyMoonshotKimiCompatModel returns early for, so the overlay must not be
+			// applyGatewayModelCompat returns early for, so the overlay must not be
 			// gated behind an isMoonshotKimiCompatModel check.
 			const kimiMessages: Model<Api> = {
 				...model("k3"),
@@ -452,6 +452,11 @@ describe("compat instance provider", () => {
 				reasoning: true,
 				thinkingLevelMap: { off: "none", max: "cached-max" },
 			};
+			const deepseekAlias = {
+				...model("custom-deepseek"),
+				reasoning: true,
+				gatewayVendor: "deepseek-ai",
+			} as Model<Api>;
 			const plain: Model<Api> = {
 				...model("plain-model"),
 				reasoning: true,
@@ -469,7 +474,7 @@ describe("compat instance provider", () => {
 			await provider.refreshModels!({
 				credential: credential("key", INSTANCE.baseUrl),
 				store: createMemoryStore({
-					models: [kimiMessages, kimiCompletions, plain],
+					models: [kimiMessages, kimiCompletions, deepseekAlias, plain],
 					checkedAt: 1,
 				}),
 				allowNetwork: true,
@@ -490,6 +495,11 @@ describe("compat instance provider", () => {
 			// A messages-routed Kimi model still must not receive OpenAI-shaped compat.
 			expect(byId.get("k3")?.compat).toBeUndefined();
 			expect(byId.get("kimi-k2.5")?.thinkingLevelMap).toEqual(universal);
+			expect(byId.get("custom-deepseek")?.compat).toMatchObject({
+				supportsStore: false,
+				supportsDeveloperRole: false,
+				thinkingFormat: "deepseek",
+			});
 			expect(byId.get("plain-model")?.thinkingLevelMap).toEqual(universal);
 		} finally {
 			cleanup();

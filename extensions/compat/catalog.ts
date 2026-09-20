@@ -25,9 +25,24 @@ type CompatGatewayModel = GatewayModel & {
 	max_tokens?: unknown;
 };
 
+/**
+ * A small persisted hint for aliases whose upstream vendor cannot be recovered
+ * from the model id alone. Unknown fields are ignored by pi-ai but survive the
+ * catalog cache's model serialization, so an offline restore can reapply the
+ * same transport compat as a fresh catalog fetch.
+ */
+type GatewayCompatModel = Model<Api> & {
+	gatewayVendor?: string;
+};
+
 function stripControlChars(value: string): string {
 	return value.replace(/\p{Control}/gu, "");
 }
+
+const DEEPSEEK_VENDOR_IDS = new Set([
+	"deepseek",
+	"deepseek-ai",
+]);
 
 const MOONSHOT_KIMI_VENDOR_IDS = new Set([
 	"moonshotai",
@@ -36,6 +51,15 @@ const MOONSHOT_KIMI_VENDOR_IDS = new Set([
 	"kimi-coding",
 	"kimi-coding-cn",
 ]);
+
+function isPersistedCompatVendor(vendor: string): boolean {
+	return DEEPSEEK_VENDOR_IDS.has(vendor) || MOONSHOT_KIMI_VENDOR_IDS.has(vendor);
+}
+
+function gatewayVendorFromModel(model: Model<Api>): string | undefined {
+	const value = model as GatewayCompatModel;
+	return typeof value.gatewayVendor === "string" ? value.gatewayVendor : undefined;
+}
 
 function bareCompatModelId(modelId: string): string {
 	const id = modelId.trim().toLowerCase();
@@ -51,6 +75,28 @@ export function isMoonshotKimiK3Model(modelId: string): boolean {
 		bareId.startsWith("kimi-k3-") ||
 		bareId.startsWith("k3-")
 	);
+}
+
+export function isDeepSeekCompatModel(modelId: string, vendor?: string): boolean {
+	const normalizedVendor = vendor?.trim().toLowerCase();
+	if (normalizedVendor && DEEPSEEK_VENDOR_IDS.has(normalizedVendor)) {
+		return true;
+	}
+
+	const bareId = bareCompatModelId(modelId);
+	return bareId === "deepseek" || bareId.startsWith("deepseek-");
+}
+
+/** Align gateway-routed DeepSeek models with pi-ai's native DeepSeek transport metadata. */
+export function deepseekOpenAICompat(): OpenAICompletionsCompat {
+	return {
+		supportsStore: false,
+		supportsDeveloperRole: false,
+		requiresReasoningContentOnAssistantMessages: true,
+		// Without this, pi-ai never emits `thinking: { type: "enabled" }` for
+		// reasoning models and the reasoner path breaks on gateway-routed DeepSeek.
+		thinkingFormat: "deepseek",
+	};
 }
 
 /** Moonshot/Kimi models routed via CPA, Sub2API, or NewAPI lose pi-ai URL-based compat detection. */
@@ -94,8 +140,8 @@ export function moonshotKimiOpenAICompat(modelId: string): OpenAICompletionsComp
 }
 
 /**
- * Patch compat metadata onto gateway-routed Kimi models (including cached catalog
- * entries).
+ * Patch compat metadata onto gateway-routed Kimi/DeepSeek models (including
+ * cached catalog entries).
  *
  * `moonshotKimiOpenAICompat()` returns an OpenAICompletionsCompat, whose load-
  * bearing field here is `supportsDeveloperRole: false` — without it pi-ai sends
@@ -107,18 +153,21 @@ export function moonshotKimiOpenAICompat(modelId: string): OpenAICompletionsComp
  * AnthropicMessagesCompat shares none of those fields, so a Kimi model routed to
  * `messages` must not be stamped with this metadata at all.
  */
-export function applyMoonshotKimiCompatModel<T extends Model<Api>>(
+export function applyGatewayModelCompat<T extends Model<Api>>(
 	model: T,
 	vendor?: string,
 ): T {
 	if (model.api === "anthropic-messages") {
 		return applyUniversalThinkingLevelMapToModel(model);
 	}
-	if (!isMoonshotKimiCompatModel(model.id, vendor)) {
+	const effectiveVendor = vendor ?? gatewayVendorFromModel(model);
+	const isDeepSeek = isDeepSeekCompatModel(model.id, effectiveVendor);
+	const isMoonshotKimi = isMoonshotKimiCompatModel(model.id, effectiveVendor);
+	if (!isMoonshotKimi && !isDeepSeek) {
 		return model;
 	}
 
-	model.compat = moonshotKimiOpenAICompat(model.id);
+	model.compat = isDeepSeek ? deepseekOpenAICompat() : moonshotKimiOpenAICompat(model.id);
 	return applyUniversalThinkingLevelMapToModel(model);
 }
 
@@ -259,7 +308,7 @@ export function mapCompatModelsPayload(
 					(typeof upstream.name === "string" && upstream.name.trim()) ||
 					id,
 			).trim() || id;
-		const model: Model<Api> = {
+		const model: GatewayCompatModel = {
 			id,
 			name: displayName,
 			provider: options.providerId,
@@ -272,8 +321,9 @@ export function mapCompatModelsPayload(
 			maxTokens,
 			thinkingLevelMap: thinking.thinkingLevelMap,
 			...(thinking.compat ? { compat: thinking.compat } : {}),
+			...(vendor && isPersistedCompatVendor(vendor) ? { gatewayVendor: vendor } : {}),
 		};
-		models.push(applyMoonshotKimiCompatModel(model, vendor));
+		models.push(applyGatewayModelCompat(model, vendor));
 		catalogRefs.push(
 			vendor && KNOWN_UPSTREAM_VENDOR_IDS.has(vendor)
 				? { id, providerId: vendor }
