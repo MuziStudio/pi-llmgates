@@ -8,7 +8,20 @@
 
 ## [Unreleased]
 
+### 新增
+
+- **经网关路由的 DeepSeek 模型补齐传输层 compat。** pi-ai 的 DeepSeek 识别基于 `api.deepseek.com` 这个 URL，模型一旦从 NewAPI / CLIProxyAPI / Sub2API / 通用网关进来就认不出来，于是按 OpenAI 默认形状发请求：`developer` role、没有 `thinking` 参数。现在按 vendor（`deepseek` / `deepseek-ai`）或 `deepseek-` 开头的 id 补一份与 pi-ai 内建 DeepSeek provider **逐字段一致**的 compat——`supportsDeveloperRole: false`（系统提示走 `system` role）、`thinkingFormat: "deepseek"`（推理请求发 `thinking: { type: "enabled" | "disabled" }`）、`requiresReasoningContentOnAssistantMessages: true`、`supportsStore: false`。
+  - **只改请求形状**，不改 endpoint 选择、不改 effort 字符串；路由到 `anthropic-messages` 的模型不共享这些字段，刻意不打这份 metadata。
+  - 已知 vendor 的别名会把 vendor 提示随模型缓存一起落盘，离线恢复时仍能套用同一份 compat（id 认不出来的别名靠它）。Moonshot / Kimi 一并享受这条缓存恢复路径。
+
 ### 变更
+
+- **子代理与工具用量的归属、费用质量口径收紧。**
+  - `bg_wait`（pi-subagents 0.69 的管理投影）不再进通用工具 inlet：它的顶层汇总用量由 async / meta 那条所有权路径负责，只有**本会话已观测到的 run** 下的完成子项才会被接受，避免旧会话的 wait 结果认领当前会话。
+  - 通用工具的 progress 快照改用独立的 `toolprogress:` 命名空间，工具结束时能被完整清理——此前 `tool_execution_update` 留下的临时用量不会被终态覆盖。
+  - **未知模型不再按默认费率造钱**：工具结果里的 model id 是生产方自填的任意字符串，查不到本地定价规则时费用记 `?`（unknown），不再用保守默认价算出一个看似确定的金额。父会话 assistant 那条路径拥有模型身份，继续按本地价估算（带 `~`）。
+  - **Pi 顶层工具结果的 cost 有了确定口径**：完整的数值或完整的 `{input,output,cacheRead,cacheWrite,total}` 对象视为生产方自报（**包括自报 0**，零费用也保留 `reported` 质量、不把整笔汇总降级成 `?`）；残缺或私有形状的 cost 一律不认，不拿它去套本地价。
+  - 无 index 的 `_meta.json`（`<runId>_<agent>_meta.json`）在能证明它是该 parent/agent 唯一一个子项时才按 child 0 计入；扫描中出现同组的 indexed 兄弟文件或第二个无 index 文件时，之前由它推断出的那笔用量会被撤销，且**只撤销由无 index 文件推断出来的 key**，不误伤 indexed `_0_meta.json` 与 child 0 完成事件已计入的用量。
 
 - **定价同步失败不再在启动时打印警告。** 之前 `LiteLLM pricing sync failed`（含 `raw.githubusercontent.com` 被墙、Node `fetch` 不走 `HTTPS_PROXY` 等情况）每个进程会在终端输出一行，挤乱用户自己的展示。现在失败一律静默回退到已缓存或静态价（费用估算仍带 `~`），只有 `LLMGATES_DEBUG=1` 时才输出每次失败及原因；写 `pricing.json` 失败同样处理。README 排障表已同步。
 

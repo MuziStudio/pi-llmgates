@@ -23,7 +23,7 @@
 
 ### 本次实施记录
 
-2026-09-07 用量/计费优化已按当前代码与 pi 0.81.1 实际行为复核后落地：包括 `bg_wait` ownership、通用工具 progress 清理、Pi cost object 质量和未知模型 fail-closed 定价，以及对应 focused fixtures/tests。pi-subagents 0.69 仍标为 `wired`（有版本标注 fixture，未作真实包 runtime-certified）；peer 范围保持不变。历史设计中的旧行号和未认证边界，以当前代码与下方兼容矩阵为准。
+2026-09-07 用量/计费优化已按当前代码与 pi 0.81.1 实际行为复核后落地：包括 `bg_wait` ownership、通用工具 progress 清理、Pi cost object 质量和未知模型 fail-closed 定价，以及对应 focused fixtures/tests。pi-subagents 0.69 仍标为 `wired`（有版本标注 fixture，未作真实包 runtime-certified）；peer 范围在 0.7.1 发版时按 pi 0.86.0 实测放宽到 `<0.87.0`（上表各份 spec 里「peer 不抬」指的是那些文档冻结时的边界）。历史设计中的旧行号和未认证边界，以当前代码与下方兼容矩阵为准。
 
 ### 已实施，但仍带未落地的后续项
 
