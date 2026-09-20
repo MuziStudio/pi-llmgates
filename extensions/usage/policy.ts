@@ -6,11 +6,26 @@
 import { envFlag, SECRET_DIR_MODE, SECRET_FILE_MODE } from "../util.js";
 import { loadValidatedConfigFile } from "../connection.js";
 
+/**
+ * S0 froze this at `<0.85.0` / `action: "keep"` because 0.85.1 had only been
+ * read locally, and the freeze required an independent compatibility run before
+ * the upper bound could move. The 0.7.1 release gate is that run: pi 0.86.0,
+ * extension load, all seven commands, catalog refresh across two gateways,
+ * DeepSeek inference at thinking off/high, the status-line ledger with its
+ * `~` / `?` markers, all three `/calls` views, and subagent usage attributed to
+ * the turn that launched it without double counting.
+ *
+ * `certified` stays false on purpose: `/endpoint`, `/balance`, `/logout`,
+ * cross-process input history and the full `restoreLastModel` matrix were NOT
+ * re-run on 0.86.0, and typecheck/tests still run against the 0.81.1 baseline.
+ * Nothing reads this constant at runtime — it is the declared decision, pinned
+ * by `test/usage-policy.test.ts` against `package.json`.
+ */
 export const USAGE_PEER_DECISION = {
-	range: ">=0.81.0 <0.85.0",
-	localResearchVersion: "0.85.1",
+	range: ">=0.81.0 <0.87.0",
+	localResearchVersion: "0.86.0",
 	certified: false,
-	action: "keep",
+	action: "widen",
 } as const;
 
 export const USAGE_LIMITS = {

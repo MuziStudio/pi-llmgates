@@ -6,7 +6,7 @@
 
 > 0.2.11 及更早的条目是在 0.2.11 发布后，依据 git 历史与各版本 tag 回补的；只收录对使用者可见的变更，纯内部重构与测试补强不单列。
 
-## [Unreleased]
+## [0.7.1] — 2026-09-20
 
 ### 新增
 
@@ -22,6 +22,8 @@
   - **未知模型不再按默认费率造钱**：工具结果里的 model id 是生产方自填的任意字符串，查不到本地定价规则时费用记 `?`（unknown），不再用保守默认价算出一个看似确定的金额。父会话 assistant 那条路径拥有模型身份，继续按本地价估算（带 `~`）。
   - **Pi 顶层工具结果的 cost 有了确定口径**：完整的数值或完整的 `{input,output,cacheRead,cacheWrite,total}` 对象视为生产方自报（**包括自报 0**，零费用也保留 `reported` 质量、不把整笔汇总降级成 `?`）；残缺或私有形状的 cost 一律不认，不拿它去套本地价。
   - 无 index 的 `_meta.json`（`<runId>_<agent>_meta.json`）在能证明它是该 parent/agent 唯一一个子项时才按 child 0 计入；扫描中出现同组的 indexed 兄弟文件或第二个无 index 文件时，之前由它推断出的那笔用量会被撤销，且**只撤销由无 index 文件推断出来的 key**，不误伤 indexed `_0_meta.json` 与 child 0 完成事件已计入的用量。
+
+- **peer 支持窗口放宽到 `<0.87.0`。** 之前是 `>=0.81.0 <0.85.0`。0.7.1 的发布门禁在 **pi 0.86.0** 上实测通过：扩展加载、七个命令原名注册、两个网关的 catalog 刷新、DeepSeek 推理（思考档 off/high）、状态行账本与 `~` / `?` 质量标记、`/calls` 三视图、子代理用量归到发起它的父轮且不重复计数。`/endpoint`、`/balance`、`/logout`、输入历史跨进程与 `restoreLastModel` 完整矩阵**未**在 0.86.0 上逐条复验，仍以 0.84.3 的结论为准；类型检查与测试的基线仍是 0.81.1。
 
 - **定价同步失败不再在启动时打印警告。** 之前 `LiteLLM pricing sync failed`（含 `raw.githubusercontent.com` 被墙、Node `fetch` 不走 `HTTPS_PROXY` 等情况）每个进程会在终端输出一行，挤乱用户自己的展示。现在失败一律静默回退到已缓存或静态价（费用估算仍带 `~`），只有 `LLMGATES_DEBUG=1` 时才输出每次失败及原因；写 `pricing.json` 失败同样处理。README 排障表已同步。
 
@@ -300,7 +302,8 @@
 
 0.1.x 的历史未回补，请查阅 git log 与各 `v0.1.*` tag。
 
-[Unreleased]: https://github.com/ax128/pi-llmgates/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/ax128/pi-llmgates/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/ax128/pi-llmgates/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/ax128/pi-llmgates/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/ax128/pi-llmgates/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/ax128/pi-llmgates/compare/v0.4.0...v0.5.0

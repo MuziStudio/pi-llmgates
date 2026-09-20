@@ -36,15 +36,17 @@ afterEach(() => {
 });
 
 describe("usage S0 policy freeze", () => {
-	it("keeps the declared Pi peer range and does not certify 0.85.1", () => {
-		expect(USAGE_PEER_DECISION.range).toBe(">=0.81.0 <0.85.0");
+	it("widens the declared Pi peer range to 0.86.x without certifying it", () => {
+		expect(USAGE_PEER_DECISION.range).toBe(">=0.81.0 <0.87.0");
 		expect(USAGE_PEER_DECISION.range).toBe(packageJson.peerDependencies["@earendil-works/pi-ai"]);
 		expect(USAGE_PEER_DECISION.range).toBe(
 			packageJson.peerDependencies["@earendil-works/pi-coding-agent"],
 		);
-		expect(USAGE_PEER_DECISION.localResearchVersion).toBe("0.85.1");
+		expect(USAGE_PEER_DECISION.localResearchVersion).toBe("0.86.0");
+		// The 0.7.1 gate ran the main paths on 0.86.0, but not the full §4 matrix,
+		// so the range moves while certification deliberately does not.
 		expect(USAGE_PEER_DECISION.certified).toBe(false);
-		expect(USAGE_PEER_DECISION.action).toBe("keep");
+		expect(USAGE_PEER_DECISION.action).toBe("widen");
 	});
 
 	it("freezes bounded storage and scheduling limits", () => {
