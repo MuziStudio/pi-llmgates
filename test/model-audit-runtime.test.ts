@@ -209,6 +209,20 @@ describe("root marker ownership", () => {
 		expect(after).not.toBe(before);
 		expect(after?.endsWith(":1")).toBe(true);
 	});
+
+	it("a session_start without a matching shutdown releases first and never strands its marker", async () => {
+		const { env, create } = setup();
+		env[MODEL_AUDIT_ROOT_ENV] = "outer";
+		const runtime = create();
+		runtime.sessionStart(TUI);
+		const first = parseRootMarker(env[MODEL_AUDIT_ROOT_ENV])!;
+		runtime.sessionStart(TUI);
+		const second = parseRootMarker(env[MODEL_AUDIT_ROOT_ENV])!;
+		expect(second.token).not.toBe(first.token);
+		await runtime.sessionShutdown();
+		// Restored to what was there before the FIRST start, not to the first marker.
+		expect(env[MODEL_AUDIT_ROOT_ENV]).toBe("outer");
+	});
 });
 
 describe("attribution snapshots", () => {

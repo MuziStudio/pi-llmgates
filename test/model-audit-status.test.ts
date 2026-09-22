@@ -3,6 +3,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import tpsExtension from "../extensions/tps.js";
+import { createModelAuditRuntime } from "../extensions/model-audit/runtime.js";
 import {
 	appendModelAuditMismatch,
 	clearModelAuditHistory,
@@ -271,6 +272,38 @@ describe("status-line model audit suffix", () => {
 			expect(vi.mocked(readModelAuditFile)).not.toHaveBeenCalled();
 		} finally {
 			await h.emit("session_shutdown");
+			h.cleanup();
+		}
+	});
+
+	it("shows a mismatch the real runtime records under a marker over 4 KiB", async () => {
+		process.env.LLMGATES_TPS = "0";
+		const h = setup();
+		// A deep working directory: the marker the owner publishes is well over 4 KiB.
+		const deepCwd = resolve(h.rootCwd, ...Array.from({ length: 16 }, (_, i) => String.fromCharCode(97 + i).repeat(250)));
+		const runtime = createModelAuditRuntime({ agentDir: h.agentDir, debug: () => {} });
+		try {
+			delete process.env[MODEL_AUDIT_ROOT_ENV];
+			runtime.sessionStart({ hasUI: true, mode: "tui", cwd: deepCwd, sessionId: "session-1" });
+			expect(Buffer.byteLength(process.env[MODEL_AUDIT_ROOT_ENV] ?? "")).toBeGreaterThan(4096);
+			await h.emit("session_start", { reason: "startup" });
+			runtime.beforeAgentStart();
+			await h.emit("before_agent_start");
+
+			runtime.observeStream({
+				providerId: "work-newapi",
+				model: { id: "gpt-5", api: "openai-completions" },
+				options: undefined,
+				start: () => ({ result: async () => ({ responseModel: "gpt-4o" }) as AssistantMessage }),
+			});
+			const historyPath = modelAuditHistoryPath(h.agentDir, deepCwd);
+			await vi.waitFor(() => expect(readModelAuditFile(historyPath).status).toBe("ok"));
+			vi.advanceTimersByTime(1_000);
+			await tick();
+			expect(h.statuses.at(-1)).toMatch(/\[error\]\.x1$/);
+		} finally {
+			await h.emit("session_shutdown");
+			await runtime.sessionShutdown();
 			h.cleanup();
 		}
 	});
