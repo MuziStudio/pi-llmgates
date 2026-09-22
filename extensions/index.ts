@@ -20,6 +20,7 @@ import {
 	registerCompatGateways,
 	type CompatGatewayRegistration,
 } from "./compat/index.js";
+import { registerModelAuditCommand } from "./model-audit/command.js";
 import {
 	createModelAuditRuntime,
 	registerModelAuditLifecycle,
@@ -75,15 +76,17 @@ export default function (pi: ExtensionAPI): void {
 	}
 
 	/**
-	 * Upstream response model audit (`/model-audit`). Its root lifecycle is
-	 * registered before, and guarded separately from, the gateway wiring: a broken
-	 * 2api.json must not take the audit down, and an audit failure must never
-	 * cost the gateways — without a runtime the providers simply do not observe.
+	 * Upstream response model audit (`/model-audit`). Its command and root
+	 * lifecycle are registered before, and guarded separately from, the gateway
+	 * wiring: a broken 2api.json must not take the audit down, and an audit
+	 * failure must never cost the gateways — without a runtime the providers
+	 * simply do not observe.
 	 */
 	let modelAudit: ModelAuditRuntime | undefined;
 	try {
 		modelAudit = createModelAuditRuntime({ agentDir });
 		registerModelAuditLifecycle(pi, modelAudit);
+		registerModelAuditCommand(pi, agentDir, modelAudit);
 	} catch (error) {
 		modelAudit = undefined;
 		logWarn(

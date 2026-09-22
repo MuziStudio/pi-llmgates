@@ -91,6 +91,7 @@ describe("extension entrypoints", () => {
 			expect(commands.has("llmgates-reload")).toBe(true);
 			expect(commands.has("balance")).toBe(true);
 			expect(commands.has("llmgates")).toBe(true);
+			expect(commands.has("model-audit")).toBe(true);
 			expect(providerIds(providers)).toEqual([BOOTSTRAP_PROVIDER_ID]);
 			// Two mounts: endpoint reconciliation and last-model recording.
 			expect(events.get("model_select")).toBe(2);
@@ -274,8 +275,9 @@ describe("extension entrypoints", () => {
 			// 2api.json must not take them down.
 			expect(events.get("model_select")).toBe(1);
 			expect(events.get("session_start")).toBeGreaterThanOrEqual(1);
-			// The model-audit root lifecycle is registered separately, before the
-			// gateways, and is the only owner of these two events in this entrypoint.
+			// The model-audit command and root lifecycle are registered separately,
+			// before the gateways; it is the only owner of these two events here.
+			expect(commands.has("model-audit")).toBe(true);
 			expect(events.get("before_agent_start")).toBe(1);
 			expect(events.get("agent_settled")).toBe(1);
 		} finally {
