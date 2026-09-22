@@ -13,7 +13,9 @@ import {
 import {
 	MODEL_AUDIT_ROOT_ENV,
 	ModelAuditStoreError,
+	modelAuditHistoryPath,
 	parseRootMarker,
+	serializeRootMarker,
 	type AppendModelAuditInput,
 } from "../extensions/model-audit/store.js";
 
@@ -194,6 +196,26 @@ describe("root marker ownership", () => {
 		runtime.sessionStart(PRINT);
 		expect(runtime.status()).toMatchObject({ owner: true });
 		expect(parseRootMarker(env[MODEL_AUDIT_ROOT_ENV])).toMatchObject({ rootCwd: PRINT.cwd });
+	});
+
+	it("rejects a valid marker whose history path belongs to another agent directory", () => {
+		const { env, create } = setup();
+		env[MODEL_AUDIT_ROOT_ENV] = serializeRootMarker({
+			v: 1,
+			token: "0123456789abcdef0123456789abcdef",
+			rootSessionId: "parent-session",
+			rootCwd: TUI.cwd,
+			historyPath: modelAuditHistoryPath(resolve("/other/pi/agent"), TUI.cwd),
+		});
+		const runtime = create();
+
+		runtime.sessionStart(PRINT);
+
+		expect(runtime.status().owner).toBe(true);
+		expect(runtime.status().marker).toMatchObject({
+			rootCwd: PRINT.cwd,
+			historyPath: modelAuditHistoryPath(AGENT_DIR, PRINT.cwd),
+		});
 	});
 
 	it("/reload and /resume get a new token so turn ids never collide", async () => {
@@ -434,6 +456,30 @@ describe("stream observation", () => {
 });
 
 describe("session shutdown", () => {
+	it("drops a stream result that settles after shutdown", async () => {
+		const { create, writes } = setup();
+		const runtime = create();
+		runtime.sessionStart(TUI);
+		let resolveResult!: (message: AssistantMessage) => void;
+		const result = new Promise<AssistantMessage>((resolve) => {
+			resolveResult = resolve;
+		});
+		const stream = { result: () => result };
+
+		runtime.observeStream({
+			providerId: "work-newapi",
+			model: { id: "gpt-5", api: "openai-completions" },
+			options: {},
+			start: () => stream,
+		});
+		await runtime.sessionShutdown();
+		runtime.sessionStart(TUI);
+		resolveResult(assistant({ responseModel: "gpt-4o" }));
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		expect(writes).toHaveLength(0);
+	});
+
 	it("waits at most the flush budget for a stuck history write", async () => {
 		const { create } = setup({
 			shutdownFlushMs: 50,
