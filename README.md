@@ -16,6 +16,7 @@ Pi provider 扩展：并行接入多个 **OpenAI 兼容网关**——[NewAPI](ht
 - [添加与管理实例](#添加与管理实例)
 - [模型与推理出口](#模型与推理出口)
 - [用量与费用](#用量与费用)
+- [上游响应模型审计](#上游响应模型审计)
 - [输入历史](#输入历史)
 - [记住上次使用的模型与思考档位](#记住上次使用的模型与思考档位)
 - [配置](#配置)
@@ -33,6 +34,7 @@ Pi provider 扩展：并行接入多个 **OpenAI 兼容网关**——[NewAPI](ht
 - **按模型路由出口**：优先用网关自报的 `inference_endpoint` / `web_chat_endpoint`，未自报时走 OpenAI Chat Completions，可按模型覆盖为 `messages` / `responses`；图像 / 视频生成模型不注册。
 - **额度查询**：`/balance` 按实例探测网关额度，网关不提供时明确显示「不可用」而非 0。
 - **用量与费用统计**：TUI 状态行 + `/calls` 明细，覆盖父会话与同步 / async 子代理，费用按上游零售价估算。
+- **上游响应模型审计**：比较发出的模型与网关响应自报的模型，系列不同时状态行追加红色 `.xN`，`/model-audit` 查看明细（默认开启，只记录不拦截）。
 - **输入历史持久化**：↑↓ 翻到的输入跨 pi 进程保留（默认开启，按工作目录隔离），`/input-history` 管理开关、作用域与清空。
 - **记住上次使用的模型与思考档位**：新会话自动回到上次用的模型和上次用的思考档位，不被 `/scoped-models` 白名单顶掉（默认开启）。
 
@@ -97,6 +99,8 @@ pi -e npm:@llmgates_api/pi-llmgates-provider
 | `/endpoint <chat\|messages\|responses\|auto> [model-id]` | 切换或清除**一个**模型的推理出口 |
 | `/endpoint-setting` | 交互式多选，批量切换任意实例模型的推理出口 |
 | `/calls` | 查看本轮、本会话的 per-model 用量与费用明细，以及覆盖快照 |
+| `/model-audit` | 查看当前工作目录里「上游响应模型与发出模型不是同一系列」的记录，以及本会话 All / Turn 计数 |
+| `/model-audit clear` | 确认后清空当前工作目录的审计记录，**连同该目录下所有会话的计数** |
 | `/input-history [status]` | 查看输入历史的开关、作用域、文件路径与已存条数 |
 | `/input-history on\|off` | 开启 / 关闭输入历史持久化（写入 `config.json`，当前 pi 进程立即生效） |
 | `/input-history scope <cwd\|global>` | 切换作用域：每个工作目录一份（默认）或全部目录共用一份 |
@@ -347,6 +351,8 @@ TUI 扩展状态行：
 - agent **运行中**：仅 `Turn 17m.19c.~$1.78`（本轮时长 · 调用数 · 费用）。父会话费用来自定价表估算时带 `~`；无法判断时显示 `?`，不会把未知标成免费 `$0`。
 - **跑完或取消 settle 后**：`All 1h1m.100c, Turn 30m.20c.~$10.10`（`All` 为 session 累计时长与调用数，**立即含本轮已确认用量**，不必等下一轮；`Turn` 为本轮）。父会话 settle 后 1s 刷新即停；后台子代理稍后入账时状态行按到达事件更新，不靠定时器。仅当账本里仍有 `running` / `provisional` producer 时刷新才继续并附 `↻ 2s`。调用数无法确认精确值时显示下界 `≥N`（例如子代理结果只带 token 不带次数）。下一轮开始时恢复为仅 `Turn`。
 
+状态行段末的红色 `.xN`（例如 `All 1h1m.100c.x3, Turn 30m.20c.~$10.10.x1`）是 [上游响应模型审计](#上游响应模型审计) 的不一致次数，与用量无关，0 时不显示。
+
 `/calls` 查看 per-model 明细。This session 在本轮尚未 settle 时也含本轮已确认数字。Coverage 是打开菜单那一瞬间的来源快照（pi 的 `ui.select` 不能在菜单打开后 live 刷新），live 总额仍看状态行。
 
 状态行、`/calls` 标题与模型明细采用同一质量口径：缺失指标不会被其他记录的已知数字掩盖。金额可显示 `~$0.010 + ?`，token 可显示 `10 + ?`；完全未知显示 `?`。本地估算保留 `~`，协议自报数字费用为 reported，无法辨认来源的旧金额保持 unknown。多模型 `modelAttempts` 保留各模型分行；同一快照的新 revision 替换整组旧模型分区。
@@ -401,6 +407,58 @@ TUI 与 `/calls` 显示的费用为**上游零售 API 费率估算**，与网关
 ```
 
 启用 `pricingAutoUpdate` 时，每次 catalog 刷新会在后台从 [LiteLLM](https://github.com/BerriAI/litellm) 同步模型零售价（不阻塞列表）：**新出现**的缺失 key 立即拉取；已确认 LiteLLM 未收录的 key，在同一进程内最多每 1 小时重探一次（记录只在内存里，重启 pi 即重新探测，不写进任何文件）；已完整命中的正缓存仍每 24h 刷新。取到整表的那一轮会用它复核当前 catalog 的**全部**模型，不只补缺失项。同步失败、或拿到的表结构上不像定价表时，保留缓存与静态规则（`LLMGATES_DEBUG=1` 可查看详情）。自动同步**只写 `rates`**，**不修改 `overrides`**。catalog 外 `rates` 条目在刷新时保留。每次刷新会重读磁盘，手改无需重启。`extensions/model-pricing.ts` 中的静态规则为离线兜底。同步成功后会在内存中 patch 已注册模型的 `cost` 字段，不额外请求 catalog。
+
+## 上游响应模型审计
+
+`/model-audit` 检查网关有没有「换模型」：每次经本插件网关 provider 发出的请求，比较**实际发出的模型名**与**上游在流式响应里自报的模型名**，归一化后**模型系列不同**才记一次。
+
+- **只检测与记录**：不拦截、不重试、不改请求或响应字节、不改计费，也**不进用量账本**（`/calls` 与费用不受影响）。
+- **默认开启**。`LLMGATES_MODEL_AUDIT=0` 完全关闭：不包装请求、不写历史、不显示后缀；与 `LLMGATES_TPS` 互不影响。每个会话开始时读取，进程内修改需 `/reload`。
+- **状态行**：在对应段末尾追加红色 `.xN`，例如 `All 28m.52c.x3, Turn 1m.2c.~$0.236.x1`。All 是本会话累计，Turn 是本轮；为 0 时不显示。只在 TUI 父会话显示，约 1–2 秒内跟上。
+- **`/model-audit`**：本会话的 All / Turn / 未归属（第一轮开始前，例如恢复会话时的压缩）数量；本进程的写入失败 / 已隔离 / 退出时未写完次数；按接口的观察计数；等价表状态；以及当前工作目录最近的不一致记录（最多 300 条，新的在前）。TUI 用列表显示，rpc 走通知，`-p` / json 不输出。
+- **`/model-audit clear`**：确认后清空当前工作目录的记录**以及该目录下所有会话的计数**（状态行后缀一并清零），文件本身保留。
+
+### 怎么算「系列不同」
+
+两边的模型名先做同样的归一化，结果相等即为同一系列，**不计数、不写历史**：
+
+- 忽略大小写与 `vendor/` 前缀；去掉末尾 `-latest`、日期（`-2024-08-06`、`-20241022`、`@20241022`）与 3–4 位数字版本号（`-002`、`-0613`、`-2411`）。
+- 网关后缀——只收录按网关源码证实「同一上游模型、不同调用参数」的：CLIProxyAPI 末尾的 `(…)`（如 `gpt-5(high)`）；NewAPI 的 `@thinking:` / `@effort:` / `@temperature:` / `@topp:` 修饰链、`claude-*` / `gemini-*` 的 `-thinking` / `-thinking-<N>` / `-nothinking`、`gpt-*` / `o1`…`o9` / `claude-*` / `gemini-*` 的 `-max|-xhigh|-high|-medium|-low|-minimal|-none`（`gpt-5.1-codex-max` 是真实模型，除外），以及 `deepseek-v4-*` 的 `-none` / `-max`。
+- 例：发 `gpt-4o` 收到 `gpt-4o-2024-08-06` 不计；收到 `gpt-4o-mini` 计一次。
+
+响应里没有模型名、或无法确定实际发出的模型时，不下结论、不计数。
+
+### 等价表
+
+网关**管理员配置的模型映射 / 别名**会被记成不一致：NewAPI 的 `model_mapping` 与 CLIProxyAPI 未开 `force-mapping` 的别名，响应里报的都是上游的真实模型名。确认无害的配对写进 `~/.pi/agent/llmgates/model-audit-equivalents.json`：
+
+```json
+{ "version": 1, "equivalents": [["my-sonnet-alias", "claude-sonnet-4-5"]] }
+```
+
+同一组里的名字（按上面的规则归一化后）视为同一系列，有交集的组会合并。文件格式有任何错误时**整份忽略**，`/model-audit` 显示 `Equivalents: INVALID`。会话开始时读取，每次 `/model-audit` 重读。
+
+### 能看到什么、看不到什么
+
+| pi 版本 | openai-completions | anthropic-messages | openai-responses |
+| --- | --- | --- | --- |
+| 0.81–0.82 | ✅ 靠 pi 的 `responseModel` 字段 | ❌ | ❌ |
+| 0.83 及以上 | ✅ 读响应流 | ✅ 读响应流 | ✅ 读响应流 |
+
+`/model-audit` 的 `Observed (this process)` 一行按接口列出 `fetch`（响应流旁路被调用）/ `response`（从响应字节读到模型）/ `field`（从 pi 字段兜底）/ `none`（没读到）的次数，可以据此确认当前 pi 版本上旁路是否生效。
+
+- **设计上覆盖**：父会话、压缩与分支摘要；pi-subagents 前台与后台；pi-subagents-lite（需启用本插件扩展）；bash 里嵌套启动的 pi（计入当前会话与当前轮）。子代理在别的工作目录（如 worktree）里运行时，记录仍写回父会话的历史文件；晚到的记录计入**启动它的那一轮**。各子代理组合在真实安装包上的验证见发布前门禁。
+- **不覆盖**：外部 CLI、不经本插件 provider 的模型、清空环境变量后启动的子进程（它会成为独立的记录根，父会话看不到）。
+- CLIProxyAPI 对 **Responses 客户端**在 Claude / Gemini / OpenAI-chat 上游时回显请求的模型名，这条路径永远看不到不一致；CLIProxyAPI 的 `auto` 模型每次都会被记为不一致（用等价表豁免）。
+- 只能看到上游**自报**的模型名：响应里没有模型名不能证明没换，网关把响应改回请求名时也看不出来。
+- 响应的 content-type 不是 `text/event-stream` 时不读（计入 `none`）。
+
+### 存储与隐私
+
+- 历史文件：`~/.pi/agent/llmgates/model-audit/<编码后的 cwd>.json`，目录 `0700`、文件 `0600`，每个工作目录一份。记录只保留最近 300 条；计数按会话单独累计，**不受 300 条截断影响**（最多保留 100 个会话、每个会话最近 20 轮）。
+- 每条记录：时间、会话与轮次 id、网关实例 id、接口、发出的模型、响应的模型。**不记录** prompt、响应内容、API key、headers、base URL；模型名去掉控制字符并限长。
+- 文件损坏时改名为 `.<文件名>.corrupt`（只留一份）后重建；版本比插件新时只读不写。写入失败不影响推理，计入 `/model-audit` 的本进程失败数；退出时最多等 1.5 秒未完成的写入。
+- 插件在环境变量 `LLMGATES_MODEL_AUDIT_ROOT` 里放一段小 JSON（会话 id、工作目录、历史文件路径、当前轮次 id，**不含密钥**），子代理靠它把记录写回父会话。pi 的 bash 工具会把它传给子命令；请不要手工设置或修改。
 
 ## 输入历史
 
@@ -497,6 +555,8 @@ pi **不保存**「上次用的模型」。`~/.pi/agent/settings.json` 里的 `d
 | `input-history/*.json` | 持久化的输入历史，每个作用域一份，见 [输入历史](#输入历史) |
 | `last-model.json` | 上次使用的模型与思考档位（provider id + 模型 id + 思考档位），见 [记住上次使用的模型与思考档位](#记住上次使用的模型与思考档位) |
 | `usage/<root>/` | 可选用量 journal/checkpoint（默认不创建），见 [状态行与 `/calls`](#状态行与-calls) |
+| `model-audit/*.json` | 上游响应模型审计的历史，每个工作目录一份，见 [上游响应模型审计](#上游响应模型审计) |
+| `model-audit-equivalents.json` | 审计用的模型等价表（可选，需手工创建），见 [等价表](#等价表) |
 
 `config.json`（下面写的是**默认值**，文件不存在或缺少某个键时即按此生效）：
 
@@ -534,6 +594,7 @@ pi **不保存**「上次用的模型」。`~/.pi/agent/settings.json` 里的 `d
 | `LLMGATES_TPS_SUBAGENT` | 默认启用；设为 `0` / `false` / `no` 时关闭子代理 async 旁路与 meta 扫描 |
 | `LLMGATES_TPS_COMPACTION` | 默认启用；设为 `0` / `false` / `no` 时不统计压缩 / 分支摘要条目的用量 |
 | `LLMGATES_TPS_TOOL_USAGE` | 默认启用；设为 `0` / `false` / `no` 时不统计工具结果顶层 `usage`（`subagent` / Cursor `Task` 不受影响） |
+| `LLMGATES_MODEL_AUDIT` | 上游响应模型审计（默认启用；`0` / `false` / `no` 时不包装请求、不写历史、不显示 `.xN`；与 `LLMGATES_TPS` 互不影响） |
 | `PI_OFFLINE` | 设为 `1` / `true` / `yes` 时跳过网络 catalog 刷新 |
 
 上述开关统一解析：`1` / `true` / `yes` / `on` 为开，`0` / `false` / `no` / `off` 为关，其余值视为未设置（回落到各自默认）。`LLMGATES_INPUT_HISTORY_SCOPE` 只认 `cwd` / `global`，其余值同样视为未设置。
@@ -552,6 +613,7 @@ pi **不保存**「上次用的模型」。`~/.pi/agent/settings.json` 里的 `d
 - 启动采用 cache-first；cache-only、离线或 freshness-window skip 直接使用缓存中的 routing/thinking metadata。session 启动可触发一次后台刷新，但没有周期刷新 timer；失败会 warning 并保留旧 catalog/cache。
 - 普通 catalog refresh 只有在网络映射与 cache 写入都成功后才发布新模型；网络或 cache 写入失败保留内存与磁盘旧值。登录后 cache 写入失败是例外：不撤销登录，会话使用已验证目录，磁盘保留旧缓存。
 - 配置写入 mode `0600` 且原子替换。
+- 上游响应模型审计只读响应字节：先原样转发、再在旁路里解析，不重编码、不改请求；历史只存模型名与会话 / 实例 id，不存 prompt、响应、key、headers。历史文件 `0600`、目录 `0700`，只对 `llmgates/model-audit` 目录本身校验「不是符号链接」并收紧权限，不动其它目录。
 - 输入历史文件同样是 `0600`、目录 `0700`（与 `auth.json` 同级）。⚠️ POSIX 权限位在 Windows 上没有实际保护力，那里请依赖用户目录本身的访问控制。
 - 输入历史默认作用域是 `cwd`：pi 本来就把每条用户消息写进 per-cwd 会话文件（`~/.pi/agent/sessions/`），所以默认开启带来的增量风险是「把散落的输入**聚合**成一份易读列表」，而不是「输入从此开始落盘」。`global` 是唯一引入**跨项目可见性**的选项，因此需要显式开启，且首次启用时会提示一次。
 - pi 内置与扩展注册的斜杠命令、`!bash` **结构性地不进**输入历史文件；`/skill:` 与 prompt template 调用会进（它们本质是 prompt，不是命令）。见 [输入历史](#输入历史)。
@@ -575,6 +637,7 @@ pi **不保存**「上次用的模型」。`~/.pi/agent/settings.json` 里的 `d
 | 费用显示 `~` 估算值、价格明显过期 | 定价表拉不到（离线 / `raw.githubusercontent.com` 被墙 / Node `fetch` 不走 `HTTPS_PROXY`），或返回的内容结构上不像定价表（`Implausible LiteLLM pricing table`，通常是被代理或错误页替换）；费用回退到已缓存或静态价，功能不受影响。**默认不打印警告**，`LLMGATES_DEBUG=1` 后 `/reload` 可见 `LiteLLM pricing sync failed` 及原因；或手工编辑 `~/.pi/agent/llmgates/pricing.json` |
 | `The agent is still busy` | `/endpoint`、`/endpoint-setting`、`/llmgates-reload` 等待当前对话轮结束超过 120s；未写入任何文件，等这一轮结束后重跑即可 |
 | `file lock was compromised` | 锁在续期窗口内没能刷新（机器休眠、事件循环长时间阻塞、网络盘）。已自动释放并继续，不影响写入；反复出现时检查 `~/.pi/agent/` 是否在网络文件系统上 |
+| 状态行末尾出现红色 `.xN` | 上游响应里的模型与发出的不是同一系列，`/model-audit` 看明细；网关配置的映射 / 别名可以写进 [等价表](#等价表) 豁免 |
 | 需要调试日志 | `LLMGATES_DEBUG=1` 后 `/reload` |
 
 ## 从 0.2.13 及更早版本升级

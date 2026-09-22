@@ -18,6 +18,7 @@ Reference implementation: [@router-for-me/pi-cliproxyapi-provider](https://pi.de
 - [Adding and managing instances](#adding-and-managing-instances)
 - [Models and inference endpoints](#models-and-inference-endpoints)
 - [Usage and cost](#usage-and-cost)
+- [Upstream response model audit](#upstream-response-model-audit)
 - [Input history](#input-history)
 - [Remembering the last used model and thinking level](#remembering-the-last-used-model-and-thinking-level)
 - [Configuration](#configuration)
@@ -35,6 +36,7 @@ Reference implementation: [@router-for-me/pi-cliproxyapi-provider](https://pi.de
 - **Per-model endpoint routing** — the gateway's own `inference_endpoint` / `web_chat_endpoint` wins; models that declare nothing go to OpenAI Chat Completions, and any model can be overridden to `messages` / `responses`. Image/video generation models are not registered.
 - **Balance lookup** — `/balance` probes each instance's quota, and reports *not available* rather than `0` when the gateway exposes no usable endpoint.
 - **Usage and cost tracking** — TUI status line plus `/calls` breakdown, covering the parent session and both sync and async subagents; cost is estimated from upstream retail rates.
+- **Upstream response model audit** — compares the model sent with the model the gateway's response reports; a different series adds a red `.xN` to the status line and `/model-audit` shows the details (on by default; records only, never blocks).
 - **Persistent input history** — what ↑↓ walks through survives across pi processes (on by default, one file per working directory); `/input-history` manages the switch, the scope and clearing it.
 - **Remembers the last used model and thinking level** — a fresh session starts back on the model *and* the thinking level you used last, instead of the first entry of the `/scoped-models` list (on by default).
 
@@ -99,6 +101,8 @@ pi -e npm:@llmgates_api/pi-llmgates-provider
 | `/endpoint <chat\|messages\|responses\|auto> [model-id]` | Switch or clear the inference endpoint of **one** model |
 | `/endpoint-setting` | Interactive multi-select to switch endpoints in bulk across instances |
 | `/calls` | Per-model usage and cost for this turn or session, plus a coverage snapshot |
+| `/model-audit` | Mismatches between the model sent and the series the upstream response reports, for this working directory, plus this session's All / Turn counts |
+| `/model-audit clear` | After confirmation, clears this working directory's audit records **and the counts of every session in it** |
 | `/input-history [status]` | Show the input-history switch, scope, file path and how much is stored |
 | `/input-history on\|off` | Enable or disable persistent input history (writes `config.json`, effective immediately in this pi process) |
 | `/input-history scope <cwd\|global>` | Switch scope: one file per working directory (default) or one shared by all of them |
@@ -349,6 +353,8 @@ The TUI extension status line shows:
 - While the agent is **running**: only `Turn 17m.19c.~$1.78` (turn elapsed · calls · cost). Parent-session cost is prefixed with `~` when it comes from the local rate table; unknown cost shows `?` rather than a free `$0`.
 - **After the turn finishes or a cancel settles**: `All 1h1m.100c, Turn 30m.20c.~$10.10` (`All` is the session's cumulative elapsed time and call count and **includes this turn's confirmed usage immediately**; `Turn` is the current turn). The 1s status-line tick stops once the parent settles; late child usage updates the line as each event arrives, not on a timer. The tick keeps going, with `↻ 2s` appended, only while the ledger still has a `running` / `provisional` producer. When the exact call count cannot be confirmed (e.g. a subagent result reports tokens but not turns) it is shown as a lower bound `≥N`. The next turn goes back to `Turn` only.
 
+A red `.xN` at the end of a segment (e.g. `All 1h1m.100c.x3, Turn 30m.20c.~$10.10.x1`) is the [upstream response model audit](#upstream-response-model-audit) mismatch count, unrelated to usage; it is hidden at 0.
+
 `/calls` shows the per-model breakdown. This session includes the in-progress turn's confirmed numbers. Coverage is a snapshot taken when the menu opens (pi's `ui.select` cannot live-refresh an open menu); live totals stay on the status line.
 
 The footer, `/calls` title and model rows use the same metric-quality rules. Missing metrics are not hidden by known values from other records: cost may read `~$0.010 + ?`, tokens `10 + ?`, and an entirely unknown value `?`. Local estimates retain `~`; numeric protocol costs are reported, while legacy costs without provenance stay unknown. Multi-model `modelAttempts` retain separate model rows; a newer snapshot revision replaces the entire previous model partition set.
@@ -403,6 +409,58 @@ The cost shown in the TUI and `/calls` is an **estimate based on upstream retail
 ```
 
 With `pricingAutoUpdate` enabled, every catalog refresh syncs retail model prices from [LiteLLM](https://github.com/BerriAI/litellm) in the background (without blocking the list): a **newly seen** missing key is fetched immediately; a key already confirmed absent from LiteLLM is re-probed at most once an hour within the same process (the record lives in memory only — restarting pi re-probes, and nothing is written to any file); a complete, positively cached table still refreshes every 24h. The round that does fetch the table re-checks **every** model in the current catalog with it, not just the gaps. On a failed sync — or one whose payload is not structurally a price table — the cache and the static rules are kept (`LLMGATES_DEBUG=1` for details). Auto-sync **only writes `rates`** and **never touches `overrides`**. `rates` entries outside the catalog survive a refresh. Every refresh re-reads the file from disk, so hand edits need no restart. The static rules in `extensions/model-pricing.ts` are the offline fallback. After a successful sync, the `cost` field of already-registered models is patched in memory — no extra catalog request.
+
+## Upstream response model audit
+
+`/model-audit` checks whether a gateway "swapped the model": for every request sent through one of this plugin's gateway providers it compares **the model actually sent** with **the model the upstream reports in its streamed response**, and records one mismatch when the normalized **model series** differs.
+
+- **Detects and records only** — never blocks, retries, or changes request or response bytes, never touches billing, and **stays out of the usage ledger** (`/calls` and cost are unaffected).
+- **On by default.** `LLMGATES_MODEL_AUDIT=0` turns it off completely: no request wrapping, no history writes, no suffix. It is independent of `LLMGATES_TPS`. Read at every session start; changing it inside a running process needs `/reload`.
+- **Status line** — a red `.xN` is appended to the matching segment, e.g. `All 28m.52c.x3, Turn 1m.2c.~$0.236.x1`. All is this session's total, Turn this turn's; hidden at 0. Shown only in the TUI parent session and catches up within about 1–2 seconds.
+- **`/model-audit`** — this session's All / Turn / unattributed (before the first turn, e.g. a compaction on resume) counts; this process's write failures / quarantines / writes unfinished at exit; per-API observation counters; the equivalence table status; and the most recent mismatches for this working directory (up to 300, newest first). A list in the TUI, a notification in rpc, nothing in `-p` / json.
+- **`/model-audit clear`** — after confirmation, clears this working directory's records **and the counts of every session in it** (status-line suffixes included); the file itself is kept.
+
+### What counts as a different series
+
+Both names go through the same normalization; equal results are the same series and are **neither counted nor written**:
+
+- Case and a `vendor/` prefix are ignored; a trailing `-latest`, a date (`-2024-08-06`, `-20241022`, `@20241022`) and a 3–4 digit revision (`-002`, `-0613`, `-2411`) are dropped.
+- Gateway suffixes — only those proven from gateway source to select the same upstream model with different call parameters: CLIProxyAPI's trailing `(…)` (e.g. `gpt-5(high)`); NewAPI's `@thinking:` / `@effort:` / `@temperature:` / `@topp:` modifier chain, `-thinking` / `-thinking-<N>` / `-nothinking` on `claude-*` / `gemini-*`, `-max|-xhigh|-high|-medium|-low|-minimal|-none` on `gpt-*` / `o1`…`o9` / `claude-*` / `gemini-*` (except `gpt-5.1-codex-max`, a real model), and `-none` / `-max` on `deepseek-v4-*`.
+- Example: sending `gpt-4o` and receiving `gpt-4o-2024-08-06` does not count; receiving `gpt-4o-mini` counts once.
+
+When the response names no model, or the model actually sent cannot be determined, there is no verdict and nothing is counted.
+
+### Equivalence table
+
+**Model mappings / aliases configured by the gateway admin** are recorded as mismatches: with NewAPI's `model_mapping` and CLIProxyAPI aliases without `force-mapping`, the response reports the real upstream model. Put pairs you know are fine in `~/.pi/agent/llmgates/model-audit-equivalents.json`:
+
+```json
+{ "version": 1, "equivalents": [["my-sonnet-alias", "claude-sonnet-4-5"]] }
+```
+
+Names in one group (after the normalization above) are the same series; overlapping groups merge. **Any format error ignores the whole file**, and `/model-audit` shows `Equivalents: INVALID`. Read at session start and re-read by every `/model-audit`.
+
+### What is and is not visible
+
+| pi version | openai-completions | anthropic-messages | openai-responses |
+| --- | --- | --- | --- |
+| 0.81–0.82 | ✅ via pi's `responseModel` field | ❌ | ❌ |
+| 0.83 and later | ✅ reads the response stream | ✅ reads the response stream | ✅ reads the response stream |
+
+The `Observed (this process)` line of `/model-audit` lists, per API, `fetch` (the stream side channel was called) / `response` (model read from the response bytes) / `field` (fallback to pi's field) / `none` (nothing read), so you can confirm the side channel works on your pi version.
+
+- **Covered by design**: the parent session, compaction and branch summaries; pi-subagents foreground and background; pi-subagents-lite (with this plugin's extension enabled); a pi started from bash inside a session (counted in the current session and turn). When a subagent runs in another working directory (a worktree, say), records still go to the parent session's history file, and a late record counts towards **the turn that started it**. Verification of each subagent combination on a real installed package is part of the pre-publish gate.
+- **Not covered**: external CLIs, models not served by this plugin's providers, and child processes started with a cleared environment (they become a separate root the parent cannot see).
+- CLIProxyAPI echoes the requested name to **Responses clients** on Claude / Gemini / OpenAI-chat upstreams, so that path can never show a mismatch; CLIProxyAPI's `auto` model is recorded as a mismatch every time (exempt it with the equivalence table).
+- Only the model the upstream **reports** is visible: a response without a model name proves nothing, and a gateway that rewrites the response back to the requested name cannot be detected.
+- Responses whose content-type is not `text/event-stream` are not read (counted as `none`).
+
+### Storage and privacy
+
+- History: `~/.pi/agent/llmgates/model-audit/<encoded cwd>.json`, directory `0700`, file `0600`, one per working directory. Only the latest 300 records are kept; counts are kept per session and are **not affected by the 300-record cap** (up to 100 sessions, the latest 20 turns each).
+- Each record: time, session and turn ids, gateway instance id, API, model sent, model received. **Never** prompts, response content, API keys, headers or base URLs; model names are stripped of control characters and length-capped.
+- A damaged file is renamed to `.<file name>.corrupt` (one copy kept) and recreated; a file from a newer plugin version is read-only. Write failures never affect inference and show up in `/model-audit`'s process failure count; exit waits at most 1.5 seconds for unfinished writes.
+- The plugin keeps a small JSON in the `LLMGATES_MODEL_AUDIT_ROOT` environment variable (session id, working directory, history file path, current turn id — **no secrets**) so that subagents write back to the parent session. pi's bash tool passes it to child commands; do not set or edit it by hand.
 
 ## Input history
 
@@ -499,6 +557,8 @@ Config files live under `~/.pi/agent/llmgates/` (older flat files under `~/.pi/a
 | `input-history/*.json` | Persisted input history, one file per scope, see [Input history](#input-history) |
 | `last-model.json` | The model and thinking level used last (provider id + model id + thinking level), see [Remembering the last used model and thinking level](#remembering-the-last-used-model-and-thinking-level) |
 | `usage/<root>/` | Optional usage journal/checkpoint (not created by default); see [Status line and `/calls`](#status-line-and-calls) |
+| `model-audit/*.json` | Upstream response model audit history, one per working directory; see [Upstream response model audit](#upstream-response-model-audit) |
+| `model-audit-equivalents.json` | Optional model equivalence table for the audit (create it by hand); see [Equivalence table](#equivalence-table) |
 
 `config.json` (the values below are the **defaults**, in effect whenever the file or a key is missing):
 
@@ -536,6 +596,7 @@ Config files live under `~/.pi/agent/llmgates/` (older flat files under `~/.pi/a
 | `LLMGATES_TPS_SUBAGENT` | Enabled by default; `0` / `false` / `no` turns off the subagent async bypass and the meta scan |
 | `LLMGATES_TPS_COMPACTION` | Enabled by default; `0` / `false` / `no` stops counting compaction / branch-summary entry usage |
 | `LLMGATES_TPS_TOOL_USAGE` | Enabled by default; `0` / `false` / `no` stops counting top-level tool-result `usage` (`subagent` / Cursor `Task` are unaffected) |
+| `LLMGATES_MODEL_AUDIT` | Upstream response model audit (enabled by default; `0` / `false` / `no` stops request wrapping, history writes and the `.xN` suffix; independent of `LLMGATES_TPS`) |
 | `PI_OFFLINE` | `1` / `true` / `yes` skips network catalog refreshes |
 
 All of these parse the same way: `1` / `true` / `yes` / `on` is on, `0` / `false` / `no` / `off` is off, and any other value counts as unset (falling back to the respective default). `LLMGATES_INPUT_HISTORY_SCOPE` only accepts `cwd` / `global`; anything else likewise counts as unset.
@@ -554,6 +615,7 @@ When one of these is **actually in effect** — a recognized value that really o
 - Startup is cache-first; cache-only, offline and freshness-window skips use the routing/thinking metadata straight from the cache. A session start can trigger one background refresh, but there is no periodic refresh timer; a failure warns and keeps the old catalog/cache.
 - A normal catalog refresh publishes new models only when both the network mapping and the cache write succeed; a network or cache write failure keeps the previous in-memory and on-disk values. A failed cache write right after login is the exception: the login is not undone, the session uses the validated catalog, and the disk keeps the old cache.
 - Config files are written with mode `0600` and replaced atomically.
+- The upstream response model audit only reads response bytes: it forwards them untouched and parses on a side channel, never re-encoding or changing the request; the history stores model names and session / instance ids only, never prompts, responses, keys or headers. History files are `0600` in a `0700` directory; only the `llmgates/model-audit` directory itself is checked for not being a symlink and tightened, no other directory is touched.
 - Input history files are `0600` in a `0700` directory, the same level as `auth.json`. ⚠️ POSIX permission bits offer no real protection on Windows; rely on the access control of the user profile directory there.
 - Input history is scoped to `cwd` by default: pi already writes every user message into a per-cwd session file (`~/.pi/agent/sessions/`), so the incremental risk of having this on by default is **aggregation** — turning scattered input into one readable list — not "input starts hitting the disk". `global` is the only option that adds **cross-project visibility**, which is why it is an explicit opt-in that discloses itself once.
 - pi's built-in and extension-registered slash commands, and `!bash`, **structurally never enter** the input history file; `/skill:` and prompt-template invocations do (they are prompts, not commands). See [Input history](#input-history).
@@ -577,6 +639,7 @@ When one of these is **actually in effect** — a recognized value that really o
 | Cost shows as a `~` estimate, or prices look stale | The price table could not be fetched (offline, `raw.githubusercontent.com` blocked, or Node `fetch` ignoring `HTTPS_PROXY`), or the response was not structurally a price table (`Implausible LiteLLM pricing table` — usually a proxy or error page in its place); cost falls back to cached or static rates and nothing else is affected. **No warning is printed by default**; `LLMGATES_DEBUG=1` then `/reload` shows `LiteLLM pricing sync failed` with the cause, or edit `~/.pi/agent/llmgates/pricing.json` by hand |
 | `The agent is still busy` | `/endpoint`, `/endpoint-setting` or `/llmgates-reload` waited more than 120s for the current turn to end; no file was written — rerun after the turn finishes |
 | `file lock was compromised` | The lock could not be renewed within its window (machine sleep, a long event-loop stall, a network drive). It is released automatically and work continues without affecting writes; if it recurs, check whether `~/.pi/agent/` sits on a network filesystem |
+| A red `.xN` at the end of the status line | The upstream response reported a different model series than the one sent; see `/model-audit`. Exempt mappings / aliases configured on the gateway with the [equivalence table](#equivalence-table) |
 | Need debug logs | `LLMGATES_DEBUG=1`, then `/reload` |
 
 ## Upgrading from 0.2.13 and earlier

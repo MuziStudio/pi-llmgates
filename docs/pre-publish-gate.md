@@ -247,6 +247,30 @@ pi install npm:@llmgates_api/pi-llmgates-provider   # 装回 registry 版；§3 
 - [ ] **恢复的副作用**：让 pi 启动时落在不支持思考的模型上、而 `last-model.json` 记的是 reasoning 模型 → 恢复后会话里除 `model_change` 外还多一条 `thinking_level_change`（档位真的变了才有这条）；在 pi 0.81–0.83 上确认 `settings.json` 的 `defaultModel` 被写、`defaultThinkingLevel` 被改写（**0.84 起两者都不写**——本功能的门禁在 pi 0.84.3 上实测：恢复到另一个模型后 `defaultModel` 纹丝不动，源码里 `setModel` / `setThinkingLevel` 都只在 `options.persist` 时才落盘，而扩展侧这两个调用都不传 options）。🖐 **`thinking_level_change` 那半条要有一个不支持思考的模型**——网关目录里全是 `reasoning: true` 时复现不出来，可跳过并在回执里注明
 - [ ] `~/.pi/agent/llmgates/last-model.json` 写成半截 JSON：启动不报错，按「没有记录」处理
 
+**上游响应模型审计（`/model-audit`）**
+
+默认开启，且挂在每一次推理请求上。改动 `extensions/model-audit/`、`compat/provider.ts` 的 `stream` /
+`streamSimple`、`tps.ts` 状态行拼接，或放宽 pi peer 上界时必测。用 loopback 假网关（HTTP 仅允许
+loopback）返回与请求**不同系列**的模型；方案与覆盖边界见
+[model-audit 设计](./superpowers/specs/2026-09-22-model-audit-design.md) §10.2：
+
+- [ ] openai-completions、anthropic-messages、openai-responses 各跑一轮：历史文件
+  `~/.pi/agent/llmgates/model-audit/<编码后的 cwd>.json` 有记录，状态行出现红色 `.x1`，`/model-audit` 可见。
+  **pi ≥ 0.83** 上 `/model-audit` 的 `Observed (this process)` 里三种 API 的 `response` 都必须 > 0（证明 fetch 旁路真的触发）；
+  0.81–0.82 上只有 openai-completions 能记录（`field` > 0），另两种记为未覆盖，不算失败
+- [ ] 返回日期后缀 / `-latest` 变体、§2.1 已收录的网关后缀（如 `gpt-5(high)`、`claude-…-thinking`）、等价表里的配对：
+  均**不计数、不写历史**；等价表写坏时 `/model-audit` 显示 `Equivalents: INVALID`
+- [ ] pi-subagents 前台、后台，以及 pi-subagents-lite 前台、后台（明确启用本插件扩展；lite 在目标 pi 版本上
+  跑不起来就记为**未覆盖**，不算通过）：记录写进父会话的 history path、rootSessionId 正确；父会话已进入下一轮时，
+  子代理晚到的记录仍计入启动它的那一轮；子代理结束后父 `LLMGATES_MODEL_AUDIT_ROOT` 仍在、originTurnId 未被改写
+- [ ] 在子代理 worktree cwd 里运行：记录仍写父 history path
+- [ ] `LLMGATES_TPS=0`：用量照旧关闭，审计历史与 `.xN` 照常；`LLMGATES_MODEL_AUDIT=0`：没有包装、没有
+  `LLMGATES_MODEL_AUDIT_ROOT`、不写历史、没有后缀
+- [ ] `/new`、`/resume`、`/reload` 后 Turn 不串号；人为占住历史文件锁（另起进程持有
+  `<history>.json.lock`）时，退出与切换会话约 1.5 秒内返回，`/model-audit` 的 `unfinished at shutdown` 计数增加
+- [ ] `/model-audit clear` 先弹确认，确认后本目录所有会话的计数与状态行后缀清零、文件保留
+- [ ] 0.81.0 floor 与 0.86.0 upper-bound 两端都跑过上面各项之前，不在 README / CHANGELOG 宣称整个 peer 范围已认证
+
 **安全 / HTTP**
 
 - [ ] 非 HTTPS 远程网关被拒绝（若涉及 URL 校验）
