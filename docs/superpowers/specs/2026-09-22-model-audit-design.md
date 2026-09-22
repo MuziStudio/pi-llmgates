@@ -1,6 +1,6 @@
 # 上游响应模型不一致审计（`/model-audit`）设计方案
 
-状态：**方案修订版（第 2 轮），未实施**。与代码冲突时以代码为准；实施后在文末补实施记录与偏差。
+状态：**方案修订版（第 2 轮）；代码已按 §12 第 1–7 步实施（6 个堆叠 PR），§12 第 8 步真实安装包门禁未跑**。与代码冲突时以代码为准；实施记录与偏差见文末。
 日期：2026-09-22
 针对：`@llmgates_api/pi-llmgates-provider` 0.7.1，peer `@earendil-works/pi-coding-agent` / `pi-ai` `>=0.81.0 <0.87.0`。
 
@@ -185,7 +185,7 @@ fetch wrapper 没有被调用，或被调用但没有得到候选模型时，读
 
 ### 4.1 Root marker 与所有者
 
-`LLMGATES_MODEL_AUDIT_ROOT` 只在审计开启时设置，值为受限 JSON（不超过 4 KiB）：
+`LLMGATES_MODEL_AUDIT_ROOT` 只在审计开启时设置，值为受限 JSON（不超过 16 KiB，实施时由 4 KiB 放宽，见文末偏差）：
 
 ```json
 {"v":1,"token":"<128-bit hex>","rootSessionId":"...","rootCwd":"/abs/project","historyPath":"/abs/.../llmgates/model-audit/<seg>.json","originTurnId":"<token>:3"}
@@ -403,6 +403,7 @@ All 28m.52c.x3, Turn 1m.2c.~$0.236.x1
 - bash 中嵌套启动的 pi 会继承 marker，计入当前 root 与 Turn。
 - 用户新 prompt 触发的预压缩发生在 `before_agent_start` 之前，归入上一轮（与 TPS 的压缩归属一致）。
 - 写入失败、隔离与 shutdown 未完成写入的计数只覆盖本进程。
+- 历史文件名沿用 `encodeCwdSegment`，`/a/b-c` 与 `/a/b/c` 会共用一个文件：按 root 的计数不受影响，记录列表会混在一起。
 
 ## 12. 实施顺序
 
@@ -434,3 +435,93 @@ All 28m.52c.x3, Turn 1m.2c.~$0.236.x1
 | 损坏文件导致该 cwd 审计永久失效 | §6 隔离后新建；`version` > 1 只读 |
 | 状态行改动清单缺 `tps-stats.ts`，空闲轮询会反复重绘 | §5 / §9 分段格式；§4.4 stat 门控、变化才刷新 |
 | 过度设计 | 删去请求 body 解析、非流式 JSON 分支、独立写队列、`unobservable` 提示与 `rootPid` |
+
+## 实施记录与偏差
+
+实施日期 2026-09-22 / 23。代码按 §12 拆成 6 个堆叠 PR（分支 `feat/model-audit-1-compare-observer` →
+`-2-store` → `-3-runtime` → `-4-wiring` → `-5-command-status` → `-6-docs`）。类型检查与测试基线仍是 dev 依赖
+pi-ai / pi-coding-agent 0.81.1。
+
+### 落地位置
+
+| 方案 | 代码 |
+| --- | --- |
+| §3.2–§3.4 旁路、SSE 解析、选取规则 | `extensions/model-audit/observer.ts` |
+| §3.6 归一化、网关后缀、等价表 | `extensions/model-audit/compare.ts` |
+| §4.1 marker 校验、§4.3 计数、§6 存储 | `extensions/model-audit/store.ts` |
+| §3.1、§3.5、§4.1–§4.4 所有者 / 冻结快照 / 收尾 / 有界 flush | `extensions/model-audit/runtime.ts` |
+| §7 命令 | `extensions/model-audit/command.ts` |
+| 接入 | `extensions/compat/provider.ts`、`extensions/compat/index.ts`、`extensions/index.ts` |
+| §4.4 轮询、§5 状态行 | `extensions/tps.ts` |
+
+### 偏差（均以代码现状为准）
+
+1. **§2.1 调研已补**（结论与来源写在 §2.1 末尾）。依赖渠道类型、客户端看不见的后缀（xAI `grok-3-mini` 的
+   `-high/-low`、xAI/百度 `-search`、火山 `deepseek*-thinking`）按“未证实不收录”原则没有进内置规则。
+2. **§3.6 第 1 步多了 3–4 位数字版本尾**（`-002`、`-0613`、`-2411`）。原因：D1 规定版本变体不计数；OpenAI 旧模型
+   （`gpt-4` → `gpt-4-0613`）、Gemini（`-002`）、Mistral（`-2411`）的响应都这样报，不收录会稳定误报；CLIProxyAPI
+   自己的替换检测也容忍 3 位版本号。代价：同一系列不同修订之间的替换看不到（按 D1 本来就不算）。另外第 1、2 步
+   **反复应用到不再变化**，否则 `claude-sonnet-4-5-20250929-thinking` 这类叠加剥不干净。
+3. **§3.1 第 3 步：调用方没有 `onPayload` 时不安装只读包装**，直接以 `model.id` 作为请求模型。三个适配器此时请求体
+   的 `model` 就是 `model.id`（§2.2），结果相同，少改一处调用参数。
+4. **§3.3 细节**：204 / 205 不观察（`Response` 构造器不允许这两个状态带 body）；256 KiB 上限按 UTF-16 code unit 计
+   （对 ASCII JSON 不小于字节数）；流结束时没有空行收尾的最后一个事件也会解析；包装后的 `Response` 额外保留
+   `url` / `redirected`（两个 SDK 只在日志里用到，但不留会变成空串）。
+5. **§3.5 计数放在模块级**：方案要求“每个进程”，归属相关状态仍全部在闭包里。若 lite 子会话确实不共享模块图（§2.3
+   待验证），它的计数只在它自己的模块图里，不会出现在父会话的 `/model-audit`。写入失败额外按原因（`newer-version`
+   / `lock` / `io` / `unsafe-dir`）分列。
+6. **§4.1 补充的校验与规则**：marker 的 `rootCwd` 也必须是绝对路径、`originTurnId` 必须属于同一 token；
+   `rootSessionId` 限定为 `[A-Za-z0-9][A-Za-z0-9._:-]{0,127}`（pi 的 uuidv7 总能通过），其它值换成
+   `sid-<sha256 前 32 位>`，没有会话 id 时用 `ephemeral-<token>`——这些值会成为 JSON 对象键，必须杜绝
+   `__proto__`；`roots` / `turns` 在内存里一律是 null-prototype 对象。“仅当 env 仍等于自己写入的值”对**轮换**
+   同样适用（方案只写在 shutdown 一句里）；所有者自己的 provider 读的是内存里的实时 marker，不回读 env。一次
+   `session_start` 前若没有配对的 shutdown，先按 shutdown 规则释放。
+7. **§4.4 轮询器用 1 秒 `setInterval`、空闲时隔一拍才读**（等效 1s / 2s），而不是变长 `setTimeout`：
+   `test/tps-runtime.test.ts` 以“meta 扫描防抖是 tps 路径里唯一的 setTimeout”为前提数定时器。stat 门控的键里
+   加了 inode（原子写换 inode）。新一轮 `before_agent_start` 时 Turn 后缀先归零，避免上一轮的 `.xN` 在新 Turn 段上闪
+   一秒。
+8. **§5 / §9：没有改 `extensions/tps-stats.ts` 与 `extensions/usage/format.ts`。** 两套格式函数本来就按 scope 返回
+   单段（`formatTpsStatusLine(…, { scope })`、`formatTpsScopeWithQuality`），分段拼接与着色放在 `tps.ts` 即可。
+   计数为 0 时 footer 与改动前逐字节相同；有计数时 `.xN` 单独用 `theme.fg("error")`，其余段仍 `dim`，idle marker
+   在最后。
+9. **§6 细节**：顶层结构错误才判“损坏”并隔离，单条坏 root / record 丢弃；`clear` 遇到文件不存在时不建文件，
+   提示“没有可清空的历史”。建目录时 `mkdir -p` 会以 `0700` 创建缺失的 `llmgates` 父目录（与仓库其它模块一致），
+   但从不对已存在的父目录 chmod。
+10. **§7 细节**：命令输出用英文，与 `/calls` 一致；多了 `/model-audit help`；显示的文件取 runtime 当前 marker 的
+    `historyPath`（嵌套会话看到的是它的 root 目录），没有 marker 时才取 `ctx.cwd`；`clear` 需要能确认的 UI 通道，
+    `-p` / json 下不执行。没有 UI 通道时不带参数的 `/model-audit` 同样不输出（notify 无处可去，不写 stdout）。
+11. **测试基础设施**：`vitest.config.ts` 把 `LLMGATES_MODEL_AUDIT_ROOT` 置空——从 pi 会话里跑测试时 bash 会继承宿主
+    marker，状态行测试会被宿主真实历史污染。`test/compat-index.test.ts` / `test/index.test.ts` 的命令清单加上
+    `model-audit`（它与 `/input-history` 一样在 gateway 之前单独注册）。
+12. **文档**：README 中英文新增「上游响应模型审计」一节及命令、配置文件、环境变量、安全、排障条目；
+    `docs/pre-publish-gate.md` §4.2 增加审计验证项；CHANGELOG `[Unreleased]` 增加条目。`docs/README.md` 的设计索引
+    在评审后补上（列入「已实施，但仍带未落地的后续项」）；`AGENTS.md`「项目是什么」同步为三个独立注册的功能。
+13. **评审后修订（§4.1、§4.4）**：
+    - marker 上限由 4 KiB 放宽到 16 KiB：两个 PATH_MAX（4096 字节）路径就可能超过 4 KiB，超限时所有者自己的状态行
+      轮询和所有子代理都读不到 marker，进程内非 TUI 实例还会成为第二个所有者改写 env。
+    - `historyPath`、`rootCwd` 必须等于 `resolve()` 后的规范形式（拒绝 `..`、`.`、重复分隔符）。
+    - 审计写入改用 `MODEL_AUDIT_LOCK_OPTIONS`（与 `LOCK_OPTIONS` 同预算，`retries.unref: true`；`withFileLock`
+      增加可选 `lockOptions`，其它调用方不变）。原因：print 模式（`pi -p`、pi-subagents 后台 runner）不调
+      `process.exit`，靠事件循环清空自然退出；`session_shutdown` 虽然只等 1.5 秒，但仍在等锁的写入会让
+      proper-lockfile 的重试定时器把进程多拖最多约 43 秒（陈旧锁需等满 30 秒）。代价：这种情况下该条写入随进程
+      退出而丢失，与“不得阻塞退出”的取舍一致。TUI 退出走 `process.exit`，本来就不受影响。
+
+### 已做的验证
+
+- focused tests：`test/model-audit-{observer,compare,store,runtime,provider,status,command}.test.ts`，以及受影响的
+  `test/index.test.ts`、`test/compat-index.test.ts`、`test/compat-provider.test.ts`、`test/tps*.test.ts`。
+- `test/model-audit-provider.test.ts` 用 loopback SSE 经**真实 pi-ai 0.81.1** openai-completions 适配器端到端写入历史
+  （0.81.x 不调用 `options.fetch`，走 `responseModel` 字段兜底）。
+- 一次性冒烟（未入库）：用全局安装的 **pi-ai 0.87.0** 真实适配器，三种 API 都经 fetch 旁路记录（`fetch=1`、
+  `response=1`）。0.87.0 超出 peer 上界，只作额外观察。
+- 0.81.0 / 0.82.0 / 0.83.0 / 0.85.1 / 0.86.0 的能力差异做了源码级复核（§2.2 补记）。
+
+### 未做 / 待验证
+
+- **§10.2 真实安装包门禁一项都没跑**（本轮不发版、不跑门禁）：pi-subagents 前台 / 后台、pi-subagents-lite 前台 /
+  后台、worktree cwd、`/new` `/resume` `/reload`、人为占锁时的退出时长，以及 0.81.0 floor / 0.86.0 upper-bound 两端。
+- lite 子实例是否与父实例共享模块级状态（§2.3）仍未验证；归属逻辑不依赖它，只影响第 5 条的计数可见性。
+- pi-subagents-lite 进程内子会话是否与父会话共用 provider 注册表（`modelRuntime`）未验证。若共用，子实例注册的
+  同 id provider 会覆盖父实例的，父会话后续请求随之错归到子实例冻结的 Turn，子实例 shutdown 后不再审计；
+  门禁 §4.2 的 lite 条目已加上专门检查。
+- §2.1 结论钉在两个网关当时的 commit 上，网关后续改动需要复核。
