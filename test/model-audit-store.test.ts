@@ -20,6 +20,8 @@ import {
 	modelAuditCounts,
 	modelAuditDir,
 	modelAuditHistoryPath,
+	MAX_ROOT_MARKER_BYTES,
+	MODEL_AUDIT_LOCK_OPTIONS,
 	ModelAuditStoreError,
 	parseRootMarker,
 	quarantinePath,
@@ -107,9 +109,29 @@ describe("root marker", () => {
 			JSON.stringify({ ...marker(), historyPath: modelAuditHistoryPath(resolve("/home/u/.pi/agent"), resolve("/elsewhere")) }),
 		],
 		["foreign turn id", JSON.stringify({ ...marker(), originTurnId: "ffffffffffffffffffffffffffffffff:1" })],
-		["over 4 KiB", JSON.stringify({ ...marker(), pad: "x".repeat(4096) })],
+		[
+			"non-canonical history path",
+			JSON.stringify({
+				...marker(),
+				historyPath: marker().historyPath.replace("/llmgates/model-audit/", "/llmgates/model-audit/../model-audit/"),
+			}),
+		],
+		["non-canonical rootCwd", JSON.stringify({ ...marker(), rootCwd: `${resolve("/abs/project")}/.` })],
+		["over the size cap", JSON.stringify({ ...marker(), pad: "x".repeat(MAX_ROOT_MARKER_BYTES) })],
 	])("rejects %s as a whole", (_label, raw) => {
 		expect(parseRootMarker(raw)).toBeNull();
+	});
+
+	it("accepts a marker for a working directory near PATH_MAX", () => {
+		// 16 × 251 bytes: a real directory can be this deep (NAME_MAX 255, PATH_MAX 4096).
+		const rootCwd = resolve("/", ...Array.from({ length: 16 }, (_, i) => String.fromCharCode(97 + i).repeat(250)));
+		const long = marker({
+			rootCwd,
+			historyPath: modelAuditHistoryPath(resolve("/home/u/.pi/agent"), rootCwd),
+			originTurnId: `${TOKEN}:1`,
+		});
+		expect(Buffer.byteLength(serializeRootMarker(long))).toBeGreaterThan(4096);
+		expect(parseRootMarker(serializeRootMarker(long))).toEqual(long);
 	});
 
 	it("safeRootSessionId keeps pi ids and digests anything else", () => {
@@ -124,6 +146,11 @@ describe("root marker", () => {
 });
 
 describe("model audit store", () => {
+	it("waits for the history lock with unref'd retry timers", () => {
+		expect(MODEL_AUDIT_LOCK_OPTIONS.retries).toMatchObject({ unref: true, retries: 10 });
+		expect(MODEL_AUDIT_LOCK_OPTIONS.stale).toBe(30_000);
+	});
+
 	it("appends newest-first and keeps counts per root and turn", async () => {
 		const { historyPath, rootCwd, append, cleanup } = setup();
 		try {
