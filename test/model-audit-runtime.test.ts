@@ -279,6 +279,33 @@ describe("stream observation", () => {
 		expect(seen).toEqual([options, options, options]);
 	});
 
+	it("falls back to the caller's untouched options when observation setup fails", () => {
+		const { create } = setup();
+		const runtime = create();
+		runtime.sessionStart(TUI);
+		const options = {};
+		Object.defineProperty(options, "fetch", {
+			enumerable: true,
+			get() {
+				throw new Error("hostile getter");
+			},
+		});
+		const seen: unknown[] = [];
+		const stream = { result: () => new Promise<AssistantMessage>(() => undefined) };
+		const returned = runtime.observeStream({
+			providerId: "p",
+			model: { id: "gpt-5", api: "openai-completions" },
+			options,
+			start: (value) => {
+				seen.push(value);
+				return stream;
+			},
+		});
+		expect(returned).toBe(stream);
+		expect(seen).toEqual([options]);
+		expect(seen[0]).toBe(options);
+	});
+
 	it("passes onPayload return values and exceptions through unchanged", async () => {
 		const { create } = setup();
 		const runtime = create();

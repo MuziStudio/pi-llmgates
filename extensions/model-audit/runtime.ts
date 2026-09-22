@@ -377,25 +377,34 @@ export function createModelAuditRuntime(options: ModelAuditRuntimeOptions): Mode
 
 			const startedAtMs = now();
 			const table = equivalents.equivalents;
-			const base = (call.options ?? {}) as Record<string, unknown>;
-			const original = typeof base.onPayload === "function" ? (base.onPayload as OnPayload) : undefined;
-			// Without a caller onPayload every adapter sends `model.id` verbatim.
-			let sentModel: string | undefined = original ? undefined : call.model.id;
+			let sentModel: string | undefined;
 			let fetchCalled = false;
+			let observed: Record<string, unknown>;
+			let sessionId: string | undefined;
 			const tracker = createResponseModelTracker(api, () => sentModel, seriesDiffers(table));
-			const observed: Record<string, unknown> = {
-				...base,
-				fetch: createObservingFetch(base.fetch as FetchImpl | undefined, () => {
-					fetchCalled = true;
-					return tracker;
-				}),
-			};
-			if (original) {
-				observed.onPayload = observeOnPayload(original, (model) => {
-					sentModel = model;
-				});
+			try {
+				const base = (call.options ?? {}) as Record<string, unknown>;
+				const original = typeof base.onPayload === "function" ? (base.onPayload as OnPayload) : undefined;
+				// Without a caller onPayload every adapter sends `model.id` verbatim.
+				sentModel = original ? undefined : call.model.id;
+				observed = {
+					...base,
+					fetch: createObservingFetch(base.fetch as FetchImpl | undefined, () => {
+						fetchCalled = true;
+						return tracker;
+					}),
+				};
+				if (original) {
+					observed.onPayload = observeOnPayload(original, (model) => {
+						sentModel = model;
+					});
+				}
+				sessionId = typeof base.sessionId === "string" ? base.sessionId : undefined;
+			} catch (error) {
+				// Setting up the observation must never cost the request itself.
+				debug(`observation setup failed: ${error instanceof Error ? error.message : String(error)}`);
+				return call.start(call.options);
 			}
-			const sessionId = typeof base.sessionId === "string" ? base.sessionId : undefined;
 
 			const finalize = (message: AssistantMessage | undefined): void => {
 				const counts = processStats.byApi[api];
