@@ -149,6 +149,14 @@ describe("response model tracker", () => {
 		expect(t.selected()).toBe("claude-3-5-haiku-20241022");
 	});
 
+	it("anthropic-messages without message_start falls back to a top-level model", () => {
+		const t = tracker("anthropic-messages", "claude-sonnet-4-5");
+		t.offerEventData(JSON.stringify({ type: "message_delta", model: "claude-sonnet-4-5" }));
+		t.offerEventData(JSON.stringify({ type: "message_delta", model: "claude-3-5-haiku" }));
+		expect(t.concluded()).toBe(false);
+		expect(t.selected()).toBe("claude-3-5-haiku");
+	});
+
 	it("ignores non-JSON, [DONE], non-object and model-less events", () => {
 		const t = tracker("openai-completions");
 		for (const value of ["[DONE]", "not json", '"model"', "[1]", JSON.stringify({ choices: [] })]) {
