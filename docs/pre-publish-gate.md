@@ -135,7 +135,7 @@ pi install npm:@llmgates_api/pi-llmgates-provider   # 装回 registry 版；§3 
 - [ ] `pi install /tmp/llg-pkg` 成功
 - [ ] `pi` 能正常进入 TUI（起不来通常就是 `packages` 里混进了 `.tgz` 路径）
 - [ ] 扩展加载无 startup 报错（注意终端与 pi 日志）
-- [ ] 七个命令（`/llmgates` `/llmgates-reload` `/endpoint` `/endpoint-setting` `/balance` `/input-history` `/calls`）都在，且是**原名**而不是 `llmgates:1` / `calls:2`（带后缀 = 装了两份，见 §3.1）
+- [ ] 八个命令（`/llmgates` `/llmgates-reload` `/endpoint` `/endpoint-setting` `/balance` `/input-history` `/model-audit` `/calls`）都在，且是**原名**而不是 `llmgates:1` / `calls:2`（带后缀 = 装了两份，见 §3.1）
 
 ### 3.1 本地 `.tgz` 与 registry 安装
 
@@ -147,7 +147,7 @@ pi install npm:@llmgates_api/pi-llmgates-provider   # 装回 registry 版；§3 
 | `pi install .` | 源码目录，**不能**代替 §3 |
 | `pi install -l …` | 仅当前项目；与全局安装路径不同，但包内容相同 |
 
-**同一扩展不要装两份。** registry 版与本地解包目录同时在 `packages` 里时，pi 不会报错，而是把两份都加载并给命令加后缀消歧——**7 个命令**（`llmgates`、`llmgates-reload`、`endpoint`、`endpoint-setting`、`balance`、`input-history` 来自 `dist/index.js`，`calls` 来自 `dist/tps.js`）全部变成 `llmgates:1`…`calls:2`，原名 `/llmgates` 反而不存在，provider 也会重复注册。验证前先 `pi uninstall npm:@llmgates_api/pi-llmgates-provider`。
+**同一扩展不要装两份。** registry 版与本地解包目录同时在 `packages` 里时，pi 不会报错，而是把两份都加载并给命令加后缀消歧——**8 个命令**（`llmgates`、`llmgates-reload`、`endpoint`、`endpoint-setting`、`balance`、`input-history`、`model-audit` 来自 `dist/index.js`，`calls` 来自 `dist/tps.js`）全部变成 `llmgates:1`…`calls:2`，原名 `/llmgates` 反而不存在，provider 也会重复注册。验证前先 `pi uninstall npm:@llmgates_api/pi-llmgates-provider`。
 
 发版前用 `.tgz` 验证扩展文件与 `files` 白名单即可；publish 后 registry tarball 内容应与 bump 后 `npm pack` 一致。
 
