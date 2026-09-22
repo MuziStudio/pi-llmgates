@@ -20,6 +20,11 @@ import {
 	registerCompatGateways,
 	type CompatGatewayRegistration,
 } from "./compat/index.js";
+import {
+	createModelAuditRuntime,
+	registerModelAuditLifecycle,
+	type ModelAuditRuntime,
+} from "./model-audit/runtime.js";
 import { envFlag, migrateLegacyConfigFiles } from "./util.js";
 
 function logWarn(message: string): void {
@@ -70,6 +75,23 @@ export default function (pi: ExtensionAPI): void {
 	}
 
 	/**
+	 * Upstream response model audit (`/model-audit`). Its root lifecycle is
+	 * registered before, and guarded separately from, the gateway wiring: a broken
+	 * 2api.json must not take the audit down, and an audit failure must never
+	 * cost the gateways — without a runtime the providers simply do not observe.
+	 */
+	let modelAudit: ModelAuditRuntime | undefined;
+	try {
+		modelAudit = createModelAuditRuntime({ agentDir });
+		registerModelAuditLifecycle(pi, modelAudit);
+	} catch (error) {
+		modelAudit = undefined;
+		logWarn(
+			`Model audit registration failed: ${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
+
+	/**
 	 * Do NOT rethrow out of the extension entry point: this runs inside pi's
 	 * extension loader, where an exception can abort loading and take every
 	 * command registered below down with it. A failed registration means no
@@ -79,7 +101,7 @@ export default function (pi: ExtensionAPI): void {
 	try {
 		// Reserved ids (pi builtins, `llmgates`, the login entry) are owned by
 		// compat/types.ts; nothing here adds to them.
-		compat = registerCompatGateways(pi, agentDir);
+		compat = registerCompatGateways(pi, agentDir, { modelAudit });
 	} catch (error) {
 		logWarn(
 			`${error instanceof Error ? error.message : String(error)}. ` +

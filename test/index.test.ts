@@ -274,6 +274,10 @@ describe("extension entrypoints", () => {
 			// 2api.json must not take them down.
 			expect(events.get("model_select")).toBe(1);
 			expect(events.get("session_start")).toBeGreaterThanOrEqual(1);
+			// The model-audit root lifecycle is registered separately, before the
+			// gateways, and is the only owner of these two events in this entrypoint.
+			expect(events.get("before_agent_start")).toBe(1);
+			expect(events.get("agent_settled")).toBe(1);
 		} finally {
 			warn.mockRestore();
 			cleanup();
