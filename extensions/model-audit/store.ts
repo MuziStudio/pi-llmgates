@@ -20,9 +20,11 @@ import {
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { encodeCwdSegment } from "../input-history-store.js";
+import type { LockOptions } from "proper-lockfile";
 import {
 	atomicWriteJson,
 	isPlainObject,
+	LOCK_OPTIONS,
 	SECRET_DIR_MODE,
 	SECRET_FILE_MODE,
 	withFileLock,
@@ -39,7 +41,12 @@ export const MAX_MODEL_AUDIT_FIELD_BYTES = 200;
 // --- root marker (§4.1) ------------------------------------------------------
 
 export const MODEL_AUDIT_ROOT_ENV = "LLMGATES_MODEL_AUDIT_ROOT";
-export const MAX_ROOT_MARKER_BYTES = 4096;
+/**
+ * Room for two PATH_MAX (4096-byte) paths — `rootCwd` and `historyPath` — plus
+ * the other fields. At 4 KiB a long working directory made the owner's own
+ * marker unreadable to its status line and to every subagent.
+ */
+export const MAX_ROOT_MARKER_BYTES = 16 * 1024;
 
 export interface ModelAuditRootMarker {
 	v: 1;
@@ -83,6 +90,8 @@ function isValidHistoryPath(historyPath: string, rootCwd: string): boolean {
 	if (!isAbsolute(historyPath) || !isAbsolute(rootCwd) || !historyPath.endsWith(".json")) {
 		return false;
 	}
+	// Only canonical paths: no `..` / `.` segments or doubled separators.
+	if (resolve(historyPath) !== historyPath || resolve(rootCwd) !== rootCwd) return false;
 	const dir = dirname(historyPath);
 	return (
 		basename(dir) === "model-audit" &&
@@ -401,6 +410,18 @@ function emptyFile(rootCwd: string, updatedAt: string): ModelAuditFile {
 
 type LockRunner = <T>(path: string, fn: () => Promise<T> | T) => Promise<T>;
 
+/**
+ * Same budget as every other lock, but the retry timers are unref'd: a history
+ * write still waiting for the lock must not keep a finished `pi -p` / subagent
+ * runner alive (print mode exits naturally rather than via `process.exit`).
+ */
+export const MODEL_AUDIT_LOCK_OPTIONS: LockOptions = {
+	...LOCK_OPTIONS,
+	retries: { ...(LOCK_OPTIONS.retries as object), unref: true },
+};
+
+const lockHistory: LockRunner = (path, fn) => withFileLock(path, fn, MODEL_AUDIT_LOCK_OPTIONS);
+
 export interface ModelAuditStoreOptions {
 	/** @internal Test seam; production uses the shared cross-process `withFileLock`. */
 	withLock?: LockRunner;
@@ -449,7 +470,7 @@ async function lockedUpdate<T>(
 	fn: () => T,
 ): Promise<T> {
 	ensureModelAuditDir(historyPath);
-	const withLock = options.withLock ?? withFileLock;
+	const withLock = options.withLock ?? lockHistory;
 	try {
 		return await withLock(historyPath, fn);
 	} catch (error) {
