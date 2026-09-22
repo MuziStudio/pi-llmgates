@@ -262,7 +262,9 @@ loopback）返回与请求**不同系列**的模型；方案与覆盖边界见
   均**不计数、不写历史**；等价表写坏时 `/model-audit` 显示 `Equivalents: INVALID`
 - [ ] pi-subagents 前台、后台，以及 pi-subagents-lite 前台、后台（明确启用本插件扩展；lite 在目标 pi 版本上
   跑不起来就记为**未覆盖**，不算通过）：记录写进父会话的 history path、rootSessionId 正确；父会话已进入下一轮时，
-  子代理晚到的记录仍计入启动它的那一轮；子代理结束后父 `LLMGATES_MODEL_AUDIT_ROOT` 仍在、originTurnId 未被改写
+  子代理晚到的记录仍计入启动它的那一轮；子代理结束后父 `LLMGATES_MODEL_AUDIT_ROOT` 仍在、originTurnId 未被改写；
+  **子代理结束后父会话下一轮的 mismatch 仍写入并计入新 Turn**（lite 进程内子实例若与父会话共用 provider 注册表，
+  会用同 id 覆盖父 provider，父请求随之错归或在子实例 shutdown 后不再审计——这一条专门抓它）
 - [ ] 在子代理 worktree cwd 里运行：记录仍写父 history path
 - [ ] `LLMGATES_TPS=0`：用量照旧关闭，审计历史与 `.xN` 照常；`LLMGATES_MODEL_AUDIT=0`：没有包装、没有
   `LLMGATES_MODEL_AUDIT_ROOT`、不写历史、没有后缀

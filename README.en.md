@@ -447,10 +447,13 @@ Names in one group (after the normalization above) are the same series; overlapp
 | 0.81–0.82 | ✅ via pi's `responseModel` field | ❌ | ❌ |
 | 0.83 and later | ✅ reads the response stream | ✅ reads the response stream | ✅ reads the response stream |
 
+The table comes from reading the pi-ai sources plus a smoke run on 0.87.0; until the real installed-package gate has run at both ends (0.81.0 and 0.86.0), it does not certify the whole peer range.
+
 The `Observed (this process)` line of `/model-audit` lists, per API, `fetch` (the stream side channel was called) / `response` (model read from the response bytes) / `field` (fallback to pi's field) / `none` (nothing read), so you can confirm the side channel works on your pi version.
 
 - **Covered by design**: the parent session, compaction and branch summaries; pi-subagents foreground and background; pi-subagents-lite (with this plugin's extension enabled); a pi started from bash inside a session (counted in the current session and turn). When a subagent runs in another working directory (a worktree, say), records still go to the parent session's history file, and a late record counts towards **the turn that started it**. Verification of each subagent combination on a real installed package is part of the pre-publish gate.
 - **Not covered**: external CLIs, models not served by this plugin's providers, and child processes started with a cleared environment (they become a separate root the parent cannot see).
+- History file names reuse the input-history directory encoding, so paths such as `/a/b-c` and `/a/b/c` share one file: per-session counts stay separate, but the `/model-audit` record list is mixed.
 - CLIProxyAPI echoes the requested name to **Responses clients** on Claude / Gemini / OpenAI-chat upstreams, so that path can never show a mismatch; CLIProxyAPI's `auto` model is recorded as a mismatch every time (exempt it with the equivalence table).
 - Only the model the upstream **reports** is visible: a response without a model name proves nothing, and a gateway that rewrites the response back to the requested name cannot be detected.
 - Responses whose content-type is not `text/event-stream` are not read (counted as `none`).

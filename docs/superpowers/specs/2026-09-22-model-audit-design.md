@@ -185,7 +185,7 @@ fetch wrapper 没有被调用，或被调用但没有得到候选模型时，读
 
 ### 4.1 Root marker 与所有者
 
-`LLMGATES_MODEL_AUDIT_ROOT` 只在审计开启时设置，值为受限 JSON（不超过 4 KiB）：
+`LLMGATES_MODEL_AUDIT_ROOT` 只在审计开启时设置，值为受限 JSON（不超过 16 KiB，实施时由 4 KiB 放宽，见文末偏差）：
 
 ```json
 {"v":1,"token":"<128-bit hex>","rootSessionId":"...","rootCwd":"/abs/project","historyPath":"/abs/.../llmgates/model-audit/<seg>.json","originTurnId":"<token>:3"}
@@ -403,6 +403,7 @@ All 28m.52c.x3, Turn 1m.2c.~$0.236.x1
 - bash 中嵌套启动的 pi 会继承 marker，计入当前 root 与 Turn。
 - 用户新 prompt 触发的预压缩发生在 `before_agent_start` 之前，归入上一轮（与 TPS 的压缩归属一致）。
 - 写入失败、隔离与 shutdown 未完成写入的计数只覆盖本进程。
+- 历史文件名沿用 `encodeCwdSegment`，`/a/b-c` 与 `/a/b/c` 会共用一个文件：按 root 的计数不受影响，记录列表会混在一起。
 
 ## 12. 实施顺序
 
@@ -488,13 +489,22 @@ pi-ai / pi-coding-agent 0.81.1。
    但从不对已存在的父目录 chmod。
 10. **§7 细节**：命令输出用英文，与 `/calls` 一致；多了 `/model-audit help`；显示的文件取 runtime 当前 marker 的
     `historyPath`（嵌套会话看到的是它的 root 目录），没有 marker 时才取 `ctx.cwd`；`clear` 需要能确认的 UI 通道，
-    `-p` / json 下不执行。
+    `-p` / json 下不执行。没有 UI 通道时不带参数的 `/model-audit` 同样不输出（notify 无处可去，不写 stdout）。
 11. **测试基础设施**：`vitest.config.ts` 把 `LLMGATES_MODEL_AUDIT_ROOT` 置空——从 pi 会话里跑测试时 bash 会继承宿主
     marker，状态行测试会被宿主真实历史污染。`test/compat-index.test.ts` / `test/index.test.ts` 的命令清单加上
     `model-audit`（它与 `/input-history` 一样在 gateway 之前单独注册）。
 12. **文档**：README 中英文新增「上游响应模型审计」一节及命令、配置文件、环境变量、安全、排障条目；
     `docs/pre-publish-gate.md` §4.2 增加审计验证项；CHANGELOG `[Unreleased]` 增加条目。`docs/README.md` 的设计索引
-    **没有在这些 PR 里改**（主工作区有一处未提交的同名改动，避免冲突）。
+    在评审后补上（列入「已实施，但仍带未落地的后续项」）；`AGENTS.md`「项目是什么」同步为三个独立注册的功能。
+13. **评审后修订（§4.1、§4.4）**：
+    - marker 上限由 4 KiB 放宽到 16 KiB：两个 PATH_MAX（4096 字节）路径就可能超过 4 KiB，超限时所有者自己的状态行
+      轮询和所有子代理都读不到 marker，进程内非 TUI 实例还会成为第二个所有者改写 env。
+    - `historyPath`、`rootCwd` 必须等于 `resolve()` 后的规范形式（拒绝 `..`、`.`、重复分隔符）。
+    - 审计写入改用 `MODEL_AUDIT_LOCK_OPTIONS`（与 `LOCK_OPTIONS` 同预算，`retries.unref: true`；`withFileLock`
+      增加可选 `lockOptions`，其它调用方不变）。原因：print 模式（`pi -p`、pi-subagents 后台 runner）不调
+      `process.exit`，靠事件循环清空自然退出；`session_shutdown` 虽然只等 1.5 秒，但仍在等锁的写入会让
+      proper-lockfile 的重试定时器把进程多拖最多约 43 秒（陈旧锁需等满 30 秒）。代价：这种情况下该条写入随进程
+      退出而丢失，与“不得阻塞退出”的取舍一致。TUI 退出走 `process.exit`，本来就不受影响。
 
 ### 已做的验证
 
@@ -511,5 +521,7 @@ pi-ai / pi-coding-agent 0.81.1。
 - **§10.2 真实安装包门禁一项都没跑**（本轮不发版、不跑门禁）：pi-subagents 前台 / 后台、pi-subagents-lite 前台 /
   后台、worktree cwd、`/new` `/resume` `/reload`、人为占锁时的退出时长，以及 0.81.0 floor / 0.86.0 upper-bound 两端。
 - lite 子实例是否与父实例共享模块级状态（§2.3）仍未验证；归属逻辑不依赖它，只影响第 5 条的计数可见性。
-- marker 超过 4 KiB（工作目录路径极长）时子代理视其无效、成为独立 root，TUI 轮询也读不到它（所有者自己照常写历史）。
+- pi-subagents-lite 进程内子会话是否与父会话共用 provider 注册表（`modelRuntime`）未验证。若共用，子实例注册的
+  同 id provider 会覆盖父实例的，父会话后续请求随之错归到子实例冻结的 Turn，子实例 shutdown 后不再审计；
+  门禁 §4.2 的 lite 条目已加上专门检查。
 - §2.1 结论钉在两个网关当时的 commit 上，网关后续改动需要复核。
