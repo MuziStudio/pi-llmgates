@@ -6,7 +6,7 @@
  * immediately and never block the agent loop.
  */
 
-import { existsSync, watch, type FSWatcher } from "node:fs";
+import { existsSync, statSync, watch, type FSWatcher } from "node:fs";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
@@ -35,7 +35,6 @@ import { registerThirdPartyUsageProbes } from "./usage/adapters/third-party.js";
 import {
 	cloneModelUsageStats,
 	formatTpsStatusLine,
-	formatTpsSettledStatusLine,
 	formatUsageBreakdownOptions,
 	formatUsageScopeTitle,
 	formatUsageSummaryMessage,
@@ -47,10 +46,36 @@ import { envFlag } from "./util.js";
 import { createUsageCollector, type UsageCollector } from "./usage/collector.js";
 import { formatCoverageLines, formatIdleMarker, formatTpsScopeWithQuality, formatUsageBreakdownFromLedger, formatUsageScopeTitleFromLedger, replaceModelUsageStats } from "./usage/format.js";
 import { resolveUsagePolicy } from "./usage/policy.js";
+import { isModelAuditEnabled } from "./model-audit/runtime.js";
+import {
+	MODEL_AUDIT_ROOT_ENV,
+	modelAuditCounts,
+	parseRootMarker,
+	readModelAuditFile,
+	type ModelAuditFile,
+} from "./model-audit/store.js";
 
 const STATUS_KEY = "tps";
 const REFRESH_INTERVAL_MS = 1000;
 const SUBAGENT_META_SCAN_DEBOUNCE_MS = 250;
+/**
+ * Model-audit history poll: a 1s interval that only polls every other tick
+ * while idle (1s active / 2s idle, design §4.4). An interval rather than a
+ * timeout chain keeps the meta-scan debounce the only setTimeout in this path.
+ */
+const AUDIT_POLL_TICK_MS = 1000;
+
+interface AuditSuffixCounts {
+	all: number;
+	turn: number;
+}
+
+interface SettledStatusArgs {
+	sessionElapsed: number;
+	sessionStats: ModelUsageStats;
+	turnElapsed: number;
+	turnStats: ModelUsageStats;
+}
 
 function isAssistantMessage(message: unknown): message is AssistantMessage {
 	if (!message || typeof message !== "object") return false;
@@ -99,6 +124,16 @@ export default function (pi: ExtensionAPI) {
 	let usageCollector: UsageCollector | null = null;
 	let lastTurnElapsedSeconds = 0;
 	let usageRevisionClock = 0;
+	// Model-audit suffix state. Counts come from the root's history file, never
+	// from the usage ledger.
+	let auditPollTimer: ReturnType<typeof setInterval> | undefined;
+	let auditPollTick = 0;
+	let auditCounts: AuditSuffixCounts = { all: 0, turn: 0 };
+	let auditFileKey: string | undefined;
+	let auditFile: ModelAuditFile | undefined;
+	// What the footer shows right now, so an audit change can redraw exactly it.
+	let shownStatus: "none" | "turn" | "settled" = "none";
+	let lastSettledArgs: SettledStatusArgs | undefined;
 
 	function nextUsageRevision(): number {
 		usageRevisionClock += 1;
@@ -126,16 +161,25 @@ export default function (pi: ExtensionAPI) {
 		return formatTpsStatusLine(totalSeconds, stats, { scope: "turn" });
 	}
 
-	function formatSettledLine(
-		sessionElapsed: number,
-		sessionStatsSnapshot: ModelUsageStats,
-		turnElapsed: number,
-		turnStatsSnapshot: ModelUsageStats,
-	): string {
+	/** All / Turn segments and the idle marker; `${all}, ${turn}${idle}` is the settled line. */
+	function formatSettledSegments(args: SettledStatusArgs): { all: string; turn: string; idle: string } {
 		if (usageCollector) {
-			return `${formatTpsScopeWithQuality("all", sessionElapsed, usageCollector.sessionTotals())}, ${formatTpsScopeWithQuality("turn", turnElapsed, usageCollector.turnTotals())}${formatIdleMarker(usageCollector.ledger.hasActiveProducers(), 2)}`;
+			return {
+				all: formatTpsScopeWithQuality("all", args.sessionElapsed, usageCollector.sessionTotals()),
+				turn: formatTpsScopeWithQuality("turn", args.turnElapsed, usageCollector.turnTotals()),
+				idle: formatIdleMarker(usageCollector.ledger.hasActiveProducers(), 2),
+			};
 		}
-		return formatTpsSettledStatusLine(sessionElapsed, sessionStatsSnapshot, turnElapsed, turnStatsSnapshot);
+		return {
+			all: formatTpsStatusLine(args.sessionElapsed, args.sessionStats, { scope: "all" }),
+			turn: formatTpsStatusLine(args.turnElapsed, args.turnStats, { scope: "turn" }),
+			idle: "",
+		};
+	}
+
+	/** Red `.xN` model-audit suffix for one segment; empty when N is 0. */
+	function auditSuffix(ctx: ExtensionContext, count: number): string {
+		return count > 0 ? ctx.ui.theme.fg("error", `.x${count}`) : "";
 	}
 
 	function runUsageTask(task: () => void | Promise<void>): void {
@@ -213,8 +257,9 @@ export default function (pi: ExtensionAPI) {
 		safeUi(ctx, () => {
 			ctx.ui.setStatus(
 				STATUS_KEY,
-				ctx.ui.theme.fg("dim", formatTurnLine(totalSeconds, stats)),
+				ctx.ui.theme.fg("dim", formatTurnLine(totalSeconds, stats)) + auditSuffix(ctx, auditCounts.turn),
 			);
+			shownStatus = "turn";
 		});
 	}
 
@@ -225,20 +270,97 @@ export default function (pi: ExtensionAPI) {
 		turnElapsed: number,
 		turnStatsSnapshot: ModelUsageStats,
 	): void {
+		const args: SettledStatusArgs = {
+			sessionElapsed,
+			sessionStats: sessionStatsSnapshot,
+			turnElapsed,
+			turnStats: turnStatsSnapshot,
+		};
 		safeUi(ctx, () => {
-			ctx.ui.setStatus(
-				STATUS_KEY,
-				ctx.ui.theme.fg(
-					"dim",
-					formatSettledLine(
-						sessionElapsed,
-						sessionStatsSnapshot,
-						turnElapsed,
-						turnStatsSnapshot,
-					),
-				),
-			);
+			const { all, turn, idle } = formatSettledSegments(args);
+			const { theme } = ctx.ui;
+			// Without audit counts the footer is byte-identical to the pre-audit one.
+			const text =
+				auditCounts.all === 0 && auditCounts.turn === 0
+					? theme.fg("dim", `${all}, ${turn}${idle}`)
+					: theme.fg("dim", all) +
+						auditSuffix(ctx, auditCounts.all) +
+						theme.fg("dim", `, ${turn}`) +
+						auditSuffix(ctx, auditCounts.turn) +
+						(idle ? theme.fg("dim", idle) : "");
+			ctx.ui.setStatus(STATUS_KEY, text);
+			shownStatus = "settled";
+			lastSettledArgs = args;
 		});
+	}
+
+	/** Redraw whatever the footer shows with the new audit suffix; nothing else changes. */
+	function redrawForAudit(): void {
+		if (!statusCtx) return;
+		if (shownStatus === "turn" && requestStartMs !== null) {
+			setTurnStatus(statusCtx, getTurnElapsedSeconds(), turnStats);
+		} else if (shownStatus === "settled" && lastSettledArgs) {
+			const args = lastSettledArgs;
+			setSettledStatus(statusCtx, args.sessionElapsed, args.sessionStats, args.turnElapsed, args.turnStats);
+		}
+	}
+
+	/**
+	 * Read the root marker the model-audit owner keeps in the env, `stat` its
+	 * history file and only re-read it when mtime / size / inode changed, then
+	 * redraw only when the All / Turn suffix actually changed: every setStatus
+	 * re-renders the whole footer.
+	 */
+	function pollAudit(): void {
+		try {
+			const marker = parseRootMarker(process.env[MODEL_AUDIT_ROOT_ENV]);
+			let next: AuditSuffixCounts = { all: 0, turn: 0 };
+			if (marker) {
+				let key: string | undefined;
+				try {
+					const stat = statSync(marker.historyPath);
+					key = `${marker.historyPath}\0${stat.mtimeMs}\0${stat.size}\0${stat.ino}`;
+				} catch {
+					key = undefined;
+				}
+				if (key === undefined) {
+					auditFile = undefined;
+				} else if (key !== auditFileKey) {
+					const read = readModelAuditFile(marker.historyPath);
+					auditFile = read.status === "ok" ? read.file : undefined;
+				}
+				auditFileKey = key;
+				const counts = modelAuditCounts(auditFile, marker.rootSessionId, marker.originTurnId);
+				next = { all: counts.all, turn: counts.turn };
+			}
+			if (next.all === auditCounts.all && next.turn === auditCounts.turn) return;
+			auditCounts = next;
+			redrawForAudit();
+		} catch (error) {
+			logTpsIssue(`Model audit poll failed: ${error instanceof Error ? error.message : String(error)}`);
+		}
+	}
+
+	function stopAuditPoll(): void {
+		if (auditPollTimer !== undefined) {
+			clearInterval(auditPollTimer);
+			auditPollTimer = undefined;
+		}
+		auditPollTick = 0;
+		auditCounts = { all: 0, turn: 0 };
+		auditFileKey = undefined;
+		auditFile = undefined;
+	}
+
+	function startAuditPoll(): void {
+		stopAuditPoll();
+		pollAudit();
+		auditPollTimer = setInterval(() => {
+			auditPollTick += 1;
+			if (requestStartMs === null && auditPollTick % 2 !== 0) return;
+			pollAudit();
+		}, AUDIT_POLL_TICK_MS);
+		auditPollTimer.unref?.();
 	}
 
 	function scheduleStatusRefresh(targetStats: ModelUsageStats = turnStats): void {
@@ -295,6 +417,8 @@ export default function (pi: ExtensionAPI) {
 		const target = ctx ?? statusCtx;
 		safeUi(target, () => {
 			target!.ui.setStatus(STATUS_KEY, undefined);
+			shownStatus = "none";
+			lastSettledArgs = undefined;
 		});
 	}
 
@@ -632,6 +756,8 @@ export default function (pi: ExtensionAPI) {
 		firstTurnStartMs = null;
 		sessionElapsedSeconds = 0;
 		statusCtx = null;
+		shownStatus = "none";
+		lastSettledArgs = undefined;
 		resetTurnStats();
 		sessionStats = createEmptyStats();
 		lastSettledTurnStats = createEmptyStats();
@@ -648,6 +774,10 @@ export default function (pi: ExtensionAPI) {
 		// Always tear down prior watcher so a later disabled/unavailable start cannot leak it (§8 / §13.2).
 		stopSubagentWatcher();
 		sessionArtifactDirs = [];
+		stopAuditPoll();
+		if (isPrimaryUiSession(ctx) && isModelAuditEnabled()) {
+			startAuditPoll();
+		}
 		if (isPrimaryUiSession(ctx)) {
 			const stableSessionId = ctx.sessionManager.getSessionId();
 			const sessionId = stableSessionId ?? `session-${sessionGeneration}`;
@@ -863,6 +993,9 @@ export default function (pi: ExtensionAPI) {
 
 		requestStartMs = Date.now();
 		statusCtx = ctx;
+		// The audit owner just moved to a fresh turn id; its count starts at 0 and
+		// the next poll picks up anything recorded for it.
+		auditCounts = { all: auditCounts.all, turn: 0 };
 		usageCollector?.beginTurn();
 		resetTurnStats();
 		if (usageCollector) {
@@ -947,6 +1080,7 @@ export default function (pi: ExtensionAPI) {
 		sessionActive = false;
 		sessionGeneration += 1;
 		clearRefreshTimer();
+		stopAuditPoll();
 		stopSubagentWatcher();
 		sessionArtifactDirs = [];
 		subagentIngestState = createSubagentIngestState();
@@ -959,6 +1093,8 @@ export default function (pi: ExtensionAPI) {
 		statusCtx = null;
 		statusRefreshScheduled = false;
 		clearStatus(previousStatusCtx);
+		shownStatus = "none";
+		lastSettledArgs = undefined;
 		if (ctx !== previousStatusCtx) {
 			clearStatus(ctx);
 		}

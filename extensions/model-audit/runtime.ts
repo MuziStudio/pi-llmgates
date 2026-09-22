@@ -89,6 +89,11 @@ export function modelAuditProcessStats(): ModelAuditProcessStats {
 	return structuredClone(processStats);
 }
 
+/** A quarantine done outside the runtime's own writes (`/model-audit clear`). */
+export function recordModelAuditQuarantine(): void {
+	processStats.quarantined += 1;
+}
+
 /** @internal Test-only. */
 export function resetModelAuditProcessStats(): void {
 	processStats = emptyProcessStats();
@@ -225,7 +230,8 @@ export function createModelAuditRuntime(options: ModelAuditRuntimeOptions): Mode
 	const loadEquivalents = options.loadEquivalents ?? loadModelEquivalents;
 	const debug = options.debug ?? debugLog;
 
-	let enabled = false;
+	// Re-read on every session_start; until then report what the env says.
+	let enabled = isModelAuditEnabled(env);
 	let active = false;
 	let role: Owner | Follower | null = null;
 	let equivalents: ModelEquivalentsLoad = { status: "missing", equivalents: EMPTY_MODEL_EQUIVALENTS };
