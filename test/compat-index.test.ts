@@ -126,6 +126,7 @@ describe("extension registration and lifecycle", () => {
 				"input-history",
 				"llmgates",
 				"llmgates-reload",
+				"model-audit",
 			]);
 
 			const instance = runtime.providers.get("gateway-a") as Provider & {
@@ -153,10 +154,10 @@ describe("extension registration and lifecycle", () => {
 			registerExtension(runtime.pi);
 
 			expect([...runtime.providers.keys()]).toEqual([]);
-			// /input-history is registered before the gateway wiring and guarded
-			// separately: it has nothing to do with gateways, so a broken registry
-			// must not take it down too.
-			expect([...runtime.commands.keys()]).toEqual(["input-history"]);
+			// /input-history and /model-audit are registered before the gateway
+			// wiring and guarded separately: neither depends on the registry, so a
+			// broken one must not take them down too.
+			expect([...runtime.commands.keys()]).toEqual(["input-history", "model-audit"]);
 			expect(warn.mock.calls.flat().join(" ")).toMatch(
 				/compat initialization/i,
 			);

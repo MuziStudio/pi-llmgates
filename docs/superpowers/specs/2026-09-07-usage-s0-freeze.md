@@ -6,13 +6,15 @@
 
 与方案或调研清单冲突时，以本文件冻结值与当前 `package.json` peer 范围为准。调研清单的 341 个目录匹配项仍是发现结果。
 
+**2026-09-20 修订（0.7.1）：** peer 上界按本表原定条件「独立兼容验证后才能抬上界」放宽到 `<0.87.0`。触发它的是 0.7.1 发布门禁在 **pi 0.86.0** 上的实测：扩展加载、七个命令原名注册、两个网关 catalog 刷新、DeepSeek 推理（思考档 off/high）、状态行账本与 `~` / `?` 质量标记、`/calls` 三视图、子代理用量归到发起它的父轮且不重复计数。`certified` **仍为 false**：`/endpoint`、`/balance`、`/logout`、输入历史跨进程与 `restoreLastModel` 完整矩阵未在 0.86.0 上复验，类型检查与测试基线仍是 0.81.1。`USAGE_PEER_DECISION.action` 随之由 `keep` 改为 `widen`。
+
 **2026-09-19 当前实现补充：** Pi 顶层工具结果中的 numeric cost 与完整 `{input, output, cacheRead, cacheWrite, total}` cost object（五个字段均为有限非负数，含明确 0）可标为 `reported`；部分/非法 object 为 `unknown`。缺失 cost 仅在命中已知定价规则时 `estimated`，未知 model/provider 不套默认费率。该补充不改变 peer 范围或持久化 schema。
 
 ## 1. Peer 与 Pi 版本
 
 | 项 | 冻结值 | 理由 |
 | --- | --- | --- |
-| `package.json` peer | `@earendil-works/pi-ai` / `pi-coding-agent` `>=0.81.0 <0.85.0` | **不改**。本机 0.85.1 超出声明范围，方案要求独立兼容验证后才能抬上界 |
+| `package.json` peer | `@earendil-works/pi-ai` / `pi-coding-agent` `>=0.81.0 <0.87.0`（0.7.1 修订，原 `<0.85.0`） | 上界已按本行原定条件放宽：0.7.1 门禁在 pi 0.86.0 上完成独立兼容验证（范围见文首修订说明）。`certified` 仍为 false，未验路径不得当作已支持 |
 | 开发依赖 | `0.81.1` | 现有 focused 测试与类型以此为准 |
 | 0.85.1 `telemetryContext` / `pi.ai.usage.*` | 不作为现成全局账本 | 源码为显式上下文且默认 NOOP |
 
@@ -107,4 +109,4 @@ Codex / Claude Code / Cursor 的 JSONL fixture 在对应 S4 adapter 开工前冻
 
 ## 8. 核对版本（不是支持）
 
-实施对照版本以 inventory JSON 的 `sourceInspected` 为准，改版本即改冻结。当前钉死：Pi `0.81.1`（dev）/ 本机调研 `0.85.1`（未认证）、`pi-subagents 0.66.0`，以及 inventory 里 15 个源码核对包。不得把目录发现项写成已支持。
+实施对照版本以 inventory JSON 的 `sourceInspected` 为准，改版本即改冻结。当前钉死：Pi `0.81.1`（dev）/ 本机调研 `0.86.0`（0.7.1 门禁实测主要路径，仍未认证）、`pi-subagents 0.66.0`，以及 inventory 里 15 个源码核对包。不得把目录发现项写成已支持。

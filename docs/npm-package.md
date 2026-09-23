@@ -124,7 +124,7 @@ pi install npm:@llmgates_api/pi-llmgates-provider
 pi update npm:@llmgates_api/pi-llmgates-provider
 
 # 固定版本（发布后）
-pi install npm:@llmgates_api/pi-llmgates-provider@0.7.0
+pi install npm:@llmgates_api/pi-llmgates-provider@0.8.0
 
 # 仅当前项目
 pi install -l npm:@llmgates_api/pi-llmgates-provider
@@ -143,10 +143,10 @@ npm view @llmgates_api/pi-llmgates-provider versions --json
 
 ```bash
 pi update npm:@llmgates_api/pi-llmgates-provider           # 升到 latest
-pi install npm:@llmgates_api/pi-llmgates-provider@0.7.0    # 装到指定版本（会把条目钉死）
+pi install npm:@llmgates_api/pi-llmgates-provider@0.8.0    # 装到指定版本（会把条目钉死）
 ```
 
-然后 `/reload`。peer：`@earendil-works/pi-ai` / `pi-coding-agent` 为 `>=0.81.0 <0.85.0`。
+然后 `/reload`。peer：`@earendil-works/pi-ai` / `pi-coding-agent` 为 `>=0.81.0 <0.87.0`（0.7.1 起；0.86.0 的实测范围见 README「环境要求」）。
 
 **别把不带版本号的 `pi install` 当升级命令**——它只在 caret 范围内升，跨 minor 就停住，且回显看不出来。在 pi 0.84.3 上用隔离 `PI_CODING_AGENT_DIR` 逐条实测：
 

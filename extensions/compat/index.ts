@@ -29,6 +29,7 @@ import {
 } from "./storage.js";
 import { normalizeInstanceId, type CompatInstance } from "./types.js";
 import { errorSummary } from "../util.js";
+import type { ModelAuditStreamHook } from "../model-audit/runtime.js";
 
 export interface RegisterCompatGatewaysOptions {
 	reservedProviderIds?: Iterable<string>;
@@ -41,6 +42,8 @@ export interface RegisterCompatGatewaysOptions {
 	 * that tests reach with fake timers rather than a second injectable knob.
 	 */
 	watchImpl?: typeof watch;
+	/** `/model-audit` observer handed to every instance provider. */
+	modelAudit?: ModelAuditStreamHook;
 }
 
 export interface CompatGatewayRegistration {
@@ -538,6 +541,7 @@ export function registerCompatGateways(
 			initialCatalog,
 			fetchImpl: options.fetchImpl,
 			now: options.now,
+			modelAudit: options.modelAudit,
 			onModelsChanged: (changed) => {
 				if (changed === provider) registerCurrent(provider);
 			},

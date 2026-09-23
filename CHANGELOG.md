@@ -8,7 +8,35 @@
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-09-23
+
+### 新增
+
+- **上游响应模型审计（`/model-audit`）。** 每次经本插件网关 provider 发出的请求，比较实际发出的模型与上游流式响应自报的模型；归一化后**模型系列不同**才记一次（日期、`-latest`、3–4 位版本号，以及按 NewAPI / CLIProxyAPI 源码证实的思考 / 推理强度后缀都视为同一系列）。状态行 All / Turn 段末尾追加红色 `.xN`，`/model-audit` 查看本会话计数与当前工作目录最近 300 条记录，`/model-audit clear` 确认后清空。网关配置的映射 / 别名会被记为不一致，可写进 `~/.pi/agent/llmgates/model-audit-equivalents.json` 豁免。
+  - **只检测与记录**：不拦截、不重试、不改请求或响应字节、不改计费，不进用量账本。默认开启，`LLMGATES_MODEL_AUDIT=0` 完全关闭。
+  - pi 0.83 起三种接口都从响应流旁路读取；0.81–0.82 只有 openai-completions 能靠 pi 的 `responseModel` 字段观察，Responses / Anthropic 在这两版上看不到。
+  - 子代理记录写回父会话的历史文件并归入启动它的那一轮（父会话在环境变量 `LLMGATES_MODEL_AUDIT_ROOT` 里放一段不含密钥的 root 信息）。**0.8.0 发版门禁**在 pi **0.86.0** 上用解包 tarball + loopback 假网关实测了：八个命令原名注册、三种 API 的 mismatch 写入与 `Observed … response≥1`、同系列变体 / 同模型不计、`MODEL_AUDIT=0` / `TPS=0`、坏等价表、`/model-audit clear` 确认框。pi-subagents / lite 前后台归属、peer **0.81.0** floor、占锁 1.5s 退出**未**在本轮安装包门禁中跑通，仍属未认证。
+  - 历史在 `~/.pi/agent/llmgates/model-audit/`（`0700` / `0600`），只存模型名与会话 / 实例 id，不存 prompt、响应、key、headers。
+  - shutdown / `/reload` 之后才 settle 的流结果不再写入已释放或已轮换的 root；继承的 root marker 若 `historyPath` 不属于本实例 `agentDir` 则自立为 owner。
+
+## [0.7.1] — 2026-09-20
+
+### 新增
+
+- **经网关路由的 DeepSeek 模型补齐传输层 compat。** pi-ai 的 DeepSeek 识别基于 `api.deepseek.com` 这个 URL，模型一旦从 NewAPI / CLIProxyAPI / Sub2API / 通用网关进来就认不出来，于是按 OpenAI 默认形状发请求：`developer` role、没有 `thinking` 参数。现在按 vendor（`deepseek` / `deepseek-ai`）或 `deepseek-` 开头的 id 补一份与 pi-ai 内建 DeepSeek provider **逐字段一致**的 compat——`supportsDeveloperRole: false`（系统提示走 `system` role）、`thinkingFormat: "deepseek"`（推理请求发 `thinking: { type: "enabled" | "disabled" }`）、`requiresReasoningContentOnAssistantMessages: true`、`supportsStore: false`。
+  - **只改请求形状**，不改 endpoint 选择、不改 effort 字符串；路由到 `anthropic-messages` 的模型不共享这些字段，刻意不打这份 metadata。
+  - 已知 vendor 的别名会把 vendor 提示随模型缓存一起落盘，离线恢复时仍能套用同一份 compat（id 认不出来的别名靠它）。Moonshot / Kimi 一并享受这条缓存恢复路径。
+
 ### 变更
+
+- **子代理与工具用量的归属、费用质量口径收紧。**
+  - `bg_wait`（pi-subagents 0.69 的管理投影）不再进通用工具 inlet：它的顶层汇总用量由 async / meta 那条所有权路径负责，只有**本会话已观测到的 run** 下的完成子项才会被接受，避免旧会话的 wait 结果认领当前会话。
+  - 通用工具的 progress 快照改用独立的 `toolprogress:` 命名空间，工具结束时能被完整清理——此前 `tool_execution_update` 留下的临时用量不会被终态覆盖。
+  - **未知模型不再按默认费率造钱**：工具结果里的 model id 是生产方自填的任意字符串，查不到本地定价规则时费用记 `?`（unknown），不再用保守默认价算出一个看似确定的金额。父会话 assistant 那条路径拥有模型身份，继续按本地价估算（带 `~`）。
+  - **Pi 顶层工具结果的 cost 有了确定口径**：完整的数值或完整的 `{input,output,cacheRead,cacheWrite,total}` 对象视为生产方自报（**包括自报 0**，零费用也保留 `reported` 质量、不把整笔汇总降级成 `?`）；残缺或私有形状的 cost 一律不认，不拿它去套本地价。
+  - 无 index 的 `_meta.json`（`<runId>_<agent>_meta.json`）在能证明它是该 parent/agent 唯一一个子项时才按 child 0 计入；扫描中出现同组的 indexed 兄弟文件或第二个无 index 文件时，之前由它推断出的那笔用量会被撤销，且**只撤销由无 index 文件推断出来的 key**，不误伤 indexed `_0_meta.json` 与 child 0 完成事件已计入的用量。
+
+- **peer 支持窗口放宽到 `<0.87.0`。** 之前是 `>=0.81.0 <0.85.0`。0.7.1 的发布门禁在 **pi 0.86.0** 上实测通过：扩展加载、七个命令原名注册、两个网关的 catalog 刷新、DeepSeek 推理（思考档 off/high）、状态行账本与 `~` / `?` 质量标记、`/calls` 三视图、子代理用量归到发起它的父轮且不重复计数。`/endpoint`、`/balance`、`/logout`、输入历史跨进程与 `restoreLastModel` 完整矩阵**未**在 0.86.0 上逐条复验，仍以 0.84.3 的结论为准；类型检查与测试的基线仍是 0.81.1。
 
 - **定价同步失败不再在启动时打印警告。** 之前 `LiteLLM pricing sync failed`（含 `raw.githubusercontent.com` 被墙、Node `fetch` 不走 `HTTPS_PROXY` 等情况）每个进程会在终端输出一行，挤乱用户自己的展示。现在失败一律静默回退到已缓存或静态价（费用估算仍带 `~`），只有 `LLMGATES_DEBUG=1` 时才输出每次失败及原因；写 `pricing.json` 失败同样处理。README 排障表已同步。
 
@@ -287,7 +315,8 @@
 
 0.1.x 的历史未回补，请查阅 git log 与各 `v0.1.*` tag。
 
-[Unreleased]: https://github.com/ax128/pi-llmgates/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/ax128/pi-llmgates/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/ax128/pi-llmgates/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/ax128/pi-llmgates/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/ax128/pi-llmgates/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/ax128/pi-llmgates/compare/v0.4.0...v0.5.0

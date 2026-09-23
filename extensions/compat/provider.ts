@@ -45,6 +45,7 @@ import {
 	type CatalogModelRef,
 } from "../model-pricing-cache.js";
 import { resolveModelCostRates } from "../model-pricing.js";
+import type { ModelAuditStreamHook } from "../model-audit/runtime.js";
 import {
 	HttpStatusError,
 	MAX_RESPONSE_BYTES,
@@ -147,6 +148,8 @@ export interface CompatProviderOptions {
 	fetchImpl?: typeof fetch;
 	now?: () => number;
 	onModelsChanged?: (provider: CompatProvider) => void;
+	/** `/model-audit` observer for `stream` / `streamSimple`; absent = no observation. */
+	modelAudit?: ModelAuditStreamHook;
 }
 
 export interface CompatProvider extends Provider {
@@ -449,6 +452,7 @@ export function createCompatProvider(
 	const providerId = currentInstance.id;
 	const now = options.now ?? (() => Date.now());
 	const fetchImpl = options.fetchImpl ?? fetch;
+	const modelAudit = options.modelAudit;
 
 	let models = (
 		options.initialCatalog?.models ??
@@ -1283,22 +1287,34 @@ export function createCompatProvider(
 			context: Context,
 			streamOptions?: ApiStreamOptions<T>,
 		) {
-			return compatStreamFor(model as Model<Api>).stream(
-				modelForInferenceRequest(model as Model<Api>) as never,
-				context,
-				streamOptions as never,
-			);
+			const streams = compatStreamFor(model as Model<Api>);
+			const requestModel = modelForInferenceRequest(model as Model<Api>);
+			if (!modelAudit) {
+				return streams.stream(requestModel as never, context, streamOptions as never);
+			}
+			return modelAudit.observeStream({
+				providerId,
+				model: requestModel,
+				options: streamOptions,
+				start: (observed) => streams.stream(requestModel as never, context, observed as never),
+			});
 		},
 		streamSimple(
 			model: Model<Api>,
 			context: Context,
 			streamOptions?: SimpleStreamOptions,
 		) {
-			return compatStreamFor(model).streamSimple(
-				modelForInferenceRequest(model) as never,
-				context,
-				streamOptions as never,
-			);
+			const streams = compatStreamFor(model);
+			const requestModel = modelForInferenceRequest(model);
+			if (!modelAudit) {
+				return streams.streamSimple(requestModel as never, context, streamOptions as never);
+			}
+			return modelAudit.observeStream({
+				providerId,
+				model: requestModel,
+				options: streamOptions,
+				start: (observed) => streams.streamSimple(requestModel as never, context, observed as never),
+			});
 		},
 		beginSession(_reason: string): void {
 			const restartingAfterShutdown = shutDown;

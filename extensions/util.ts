@@ -161,15 +161,22 @@ const fileLockQueues = new Map<string, Promise<void>>();
  * `fn` MUST NOT call back into `withFileLock` for the same path — a self-wait
  * cannot be broken. Every current body is a self-contained read/modify/atomic
  * write, and nesting is forbidden.
+ *
+ * `lockOptions` defaults to `LOCK_OPTIONS`; a caller that must not keep the
+ * process alive while it waits can pass a copy with `retries.unref`.
  */
-export async function withFileLock<T>(path: string, fn: () => Promise<T> | T): Promise<T> {
+export async function withFileLock<T>(
+	path: string,
+	fn: () => Promise<T> | T,
+	lockOptions: lockfile.LockOptions = LOCK_OPTIONS,
+): Promise<T> {
 	// Read the tail and publish the new one with no await in between, so concurrent
 	// callers cannot both chain onto the same predecessor.
 	const previous = fileLockQueues.get(path);
 	const run = (async () => {
 		// The stored tail never rejects, so a failed predecessor cannot skip our turn.
 		if (previous) await previous;
-		const release = await lockfile.lock(path, LOCK_OPTIONS);
+		const release = await lockfile.lock(path, lockOptions);
 		try {
 			return await fn();
 		} finally {
