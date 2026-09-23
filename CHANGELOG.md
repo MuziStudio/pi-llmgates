@@ -8,13 +8,16 @@
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-09-23
+
 ### 新增
 
 - **上游响应模型审计（`/model-audit`）。** 每次经本插件网关 provider 发出的请求，比较实际发出的模型与上游流式响应自报的模型；归一化后**模型系列不同**才记一次（日期、`-latest`、3–4 位版本号，以及按 NewAPI / CLIProxyAPI 源码证实的思考 / 推理强度后缀都视为同一系列）。状态行 All / Turn 段末尾追加红色 `.xN`，`/model-audit` 查看本会话计数与当前工作目录最近 300 条记录，`/model-audit clear` 确认后清空。网关配置的映射 / 别名会被记为不一致，可写进 `~/.pi/agent/llmgates/model-audit-equivalents.json` 豁免。
   - **只检测与记录**：不拦截、不重试、不改请求或响应字节、不改计费，不进用量账本。默认开启，`LLMGATES_MODEL_AUDIT=0` 完全关闭。
   - pi 0.83 起三种接口都从响应流旁路读取；0.81–0.82 只有 openai-completions 能靠 pi 的 `responseModel` 字段观察，Responses / Anthropic 在这两版上看不到。
-  - 子代理记录写回父会话的历史文件并归入启动它的那一轮（父会话在环境变量 `LLMGATES_MODEL_AUDIT_ROOT` 里放一段不含密钥的 root 信息）。各子代理组合与 0.81.0 / 0.86.0 两端尚未在真实安装包门禁中认证。
+  - 子代理记录写回父会话的历史文件并归入启动它的那一轮（父会话在环境变量 `LLMGATES_MODEL_AUDIT_ROOT` 里放一段不含密钥的 root 信息）。**0.8.0 发版门禁**在 pi **0.86.0** 上用解包 tarball + loopback 假网关实测了：八个命令原名注册、三种 API 的 mismatch 写入与 `Observed … response≥1`、同系列变体 / 同模型不计、`MODEL_AUDIT=0` / `TPS=0`、坏等价表、`/model-audit clear` 确认框。pi-subagents / lite 前后台归属、peer **0.81.0** floor、占锁 1.5s 退出**未**在本轮安装包门禁中跑通，仍属未认证。
   - 历史在 `~/.pi/agent/llmgates/model-audit/`（`0700` / `0600`），只存模型名与会话 / 实例 id，不存 prompt、响应、key、headers。
+  - shutdown / `/reload` 之后才 settle 的流结果不再写入已释放或已轮换的 root；继承的 root marker 若 `historyPath` 不属于本实例 `agentDir` 则自立为 owner。
 
 ## [0.7.1] — 2026-09-20
 

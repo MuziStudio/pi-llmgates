@@ -54,7 +54,7 @@ Pick **「LLMGates 网关」** in `/login`, then choose the gateway type and fil
 
 ## Installation
 
-**Requirements:** [pi](https://pi.dev), Node **≥ 22.19**, and `@earendil-works/pi-coding-agent` / `@earendil-works/pi-ai` **≥ 0.81.0, < 0.87.0** (baseline 0.81.1 — tests and typecheck run against that version; 0.82.1, 0.83.0, 0.84.0 and 0.84.3 are also verified). The 0.7.1 release gate additionally exercised **pi 0.86.0**: extension load, all seven commands, catalog refresh across two gateways, DeepSeek inference (thinking off/high), the status-line ledger and its quality markers, the three `/calls` views, and subagent usage attribution. `/endpoint`, `/balance`, `/logout`, cross-process input history and the full `restoreLastModel` matrix were **not** re-verified on 0.86.0 — those still rest on the 0.84.3 run.
+**Requirements:** [pi](https://pi.dev), Node **≥ 22.19**, and `@earendil-works/pi-coding-agent` / `@earendil-works/pi-ai` **≥ 0.81.0, < 0.87.0** (baseline 0.81.1 — tests and typecheck run against that version; 0.82.1, 0.83.0, 0.84.0 and 0.84.3 are also verified). The 0.7.1 release gate additionally exercised **pi 0.86.0**: extension load, all seven commands, catalog refresh across two gateways, DeepSeek inference (thinking off/high), the status-line ledger and its quality markers, the three `/calls` views, and subagent usage attribution. `/endpoint`, `/balance`, `/logout`, cross-process input history and the full `restoreLastModel` matrix were **not** re-verified on 0.86.0 — those still rest on the 0.84.3 run. **0.8.0** re-used pi 0.86.0 with the unpacked tarball for `/model-audit` (three-API mismatch and `response≥1`, toggles and equivalents, clear); subagent / lite attribution and the peer 0.81.0 floor remain uncertified in the install-package gate.
 
 This extension uses the **native Provider** API and does **not** support pi 0.80.x.
 
@@ -62,7 +62,7 @@ This extension uses the **native Provider** API and does **not** support pi 0.80
 
 ```bash
 pi install npm:@llmgates_api/pi-llmgates-provider          # first install (latest)
-pi install npm:@llmgates_api/pi-llmgates-provider@0.7.1    # pinned version
+pi install npm:@llmgates_api/pi-llmgates-provider@0.8.0    # pinned version
 pi install -l npm:@llmgates_api/pi-llmgates-provider       # this project only (otherwise ~/.pi/agent/)
 ```
 
