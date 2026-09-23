@@ -236,6 +236,7 @@ export function createModelAuditRuntime(options: ModelAuditRuntimeOptions): Mode
 	let role: Owner | Follower | null = null;
 	let equivalents: ModelEquivalentsLoad = { status: "missing", equivalents: EMPTY_MODEL_EQUIVALENTS };
 	const pendingWrites = new Set<Promise<void>>();
+	let lifecycleGeneration = 0;
 
 	function safeLoadEquivalents(): ModelEquivalentsLoad {
 		try {
@@ -291,11 +292,17 @@ export function createModelAuditRuntime(options: ModelAuditRuntimeOptions): Mode
 		sessionStart(info: ModelAuditSessionInfo): void {
 			// A start without a matching shutdown must not strand a marker.
 			release();
+			lifecycleGeneration += 1;
 			active = false;
 			enabled = isModelAuditEnabled(env);
 			if (!enabled) return;
 			equivalents = safeLoadEquivalents();
-			const inherited = parseRootMarker(env[MODEL_AUDIT_ROOT_ENV]);
+			const parsedInherited = parseRootMarker(env[MODEL_AUDIT_ROOT_ENV]);
+			const inherited =
+				parsedInherited &&
+				resolve(modelAuditHistoryPath(agentDir, parsedInherited.rootCwd)) === resolve(parsedInherited.historyPath)
+					? parsedInherited
+					: null;
 			const isTuiRoot = info.hasUI && info.mode === "tui";
 			if (isTuiRoot || !inherited) {
 				const token = randomHex(16);
@@ -338,6 +345,7 @@ export function createModelAuditRuntime(options: ModelAuditRuntimeOptions): Mode
 		},
 
 		async sessionShutdown(): Promise<void> {
+			lifecycleGeneration += 1;
 			active = false;
 			release();
 			const pending = [...pendingWrites];
@@ -382,6 +390,7 @@ export function createModelAuditRuntime(options: ModelAuditRuntimeOptions): Mode
 			if (!marker || !isModelAuditApi(api)) return call.start(call.options);
 
 			const startedAtMs = now();
+			const observationGeneration = lifecycleGeneration;
 			const table = equivalents.equivalents;
 			let sentModel: string | undefined;
 			let fetchCalled = false;
@@ -413,6 +422,7 @@ export function createModelAuditRuntime(options: ModelAuditRuntimeOptions): Mode
 			}
 
 			const finalize = (message: AssistantMessage | undefined): void => {
+				if (!active || observationGeneration !== lifecycleGeneration) return;
 				const counts = processStats.byApi[api];
 				if (fetchCalled) counts.fetch += 1;
 				let responseModel = tracker.selected();
