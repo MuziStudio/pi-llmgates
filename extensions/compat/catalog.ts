@@ -63,7 +63,7 @@ const ZAI_GLM_VENDOR_IDS = new Set([
 	"glm",
 ]);
 
-function isPersistedCompatVendor(vendor: string): boolean {
+function isKnownCompatVendor(vendor: string): boolean {
 	return (
 		DEEPSEEK_VENDOR_IDS.has(vendor) ||
 		MOONSHOT_KIMI_VENDOR_IDS.has(vendor) ||
@@ -116,13 +116,15 @@ export function isZaiGlmCompatModel(modelId: string, vendor?: string): boolean {
 	);
 }
 
-/** Align with pi-ai's native zai/zai-coding-cn transport metadata (providers/data/zai.json). */
+/** Gateway Z.ai/GLM request shape, not a full clone of native model metadata. */
 export function zaiGlmOpenAICompat(): OpenAICompletionsCompat {
 	return {
 		supportsStore: false,
 		supportsDeveloperRole: false,
 		maxTokensField: "max_tokens",
 		thinkingFormat: "zai",
+		// Keep detected effort support (normally true for gateways), and do not
+		// opt gateways into Z.ai's optional tool_stream without verified support.
 	};
 }
 
@@ -199,19 +201,30 @@ export function applyGatewayModelCompat<T extends Model<Api>>(
 	if (model.api === "anthropic-messages") {
 		return applyUniversalThinkingLevelMapToModel(model);
 	}
-	const effectiveVendor = vendor ?? gatewayVendorFromModel(model);
-	const isDeepSeek = isDeepSeekCompatModel(model.id, effectiveVendor);
-	const isMoonshotKimi = isMoonshotKimiCompatModel(model.id, effectiveVendor);
-	const isZaiGlm = isZaiGlmCompatModel(model.id, effectiveVendor);
+	const effectiveVendor = (vendor ?? gatewayVendorFromModel(model) ?? "").trim().toLowerCase();
+	// Aliases may look like another family; an identified upstream wins.
+	// Use id heuristics only when the vendor hint is absent or unrecognized.
+	const isKnownVendor = isKnownCompatVendor(effectiveVendor);
+	const isDeepSeek = isKnownVendor
+		? DEEPSEEK_VENDOR_IDS.has(effectiveVendor)
+		: isDeepSeekCompatModel(model.id);
+	const isMoonshotKimi = isKnownVendor
+		? MOONSHOT_KIMI_VENDOR_IDS.has(effectiveVendor)
+		: isMoonshotKimiCompatModel(model.id);
+	const isZaiGlm = isKnownVendor
+		? ZAI_GLM_VENDOR_IDS.has(effectiveVendor)
+		: isZaiGlmCompatModel(model.id);
 	if (!isMoonshotKimi && !isDeepSeek && !isZaiGlm) {
 		return model;
 	}
 
-	model.compat = isDeepSeek
-		? deepseekOpenAICompat()
-		: isZaiGlm
-			? zaiGlmOpenAICompat()
-			: moonshotKimiOpenAICompat(model.id);
+	if (isDeepSeek) {
+		model.compat = deepseekOpenAICompat();
+	} else if (isZaiGlm) {
+		model.compat = zaiGlmOpenAICompat();
+	} else {
+		model.compat = moonshotKimiOpenAICompat(model.id);
+	}
 	return applyUniversalThinkingLevelMapToModel(model);
 }
 
@@ -365,7 +378,7 @@ export function mapCompatModelsPayload(
 			maxTokens,
 			thinkingLevelMap: thinking.thinkingLevelMap,
 			...(thinking.compat ? { compat: thinking.compat } : {}),
-			...(vendor && isPersistedCompatVendor(vendor) ? { gatewayVendor: vendor } : {}),
+			...(vendor && isKnownCompatVendor(vendor) ? { gatewayVendor: vendor } : {}),
 		};
 		models.push(applyGatewayModelCompat(model, vendor));
 		catalogRefs.push(

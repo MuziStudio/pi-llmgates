@@ -511,6 +511,7 @@ describe("compat instance provider", () => {
 				maxTokensField: "max_tokens",
 				thinkingFormat: "zai",
 			});
+			expect(byId.get("custom-glm")?.thinkingLevelMap).toEqual(universal);
 			expect(byId.get("plain-model")?.thinkingLevelMap).toEqual(universal);
 		} finally {
 			cleanup();
